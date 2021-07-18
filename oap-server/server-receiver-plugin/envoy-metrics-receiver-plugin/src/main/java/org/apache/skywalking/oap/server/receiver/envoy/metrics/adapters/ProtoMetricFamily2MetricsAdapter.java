@@ -19,10 +19,14 @@
 package org.apache.skywalking.oap.server.receiver.envoy.metrics.adapters;
 
 import io.prometheus.client.Metrics;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 import lombok.RequiredArgsConstructor;
+import org.apache.skywalking.oap.server.library.util.prometheus.metrics.Counter;
 import org.apache.skywalking.oap.server.library.util.prometheus.metrics.Gauge;
+import org.apache.skywalking.oap.server.library.util.prometheus.metrics.Histogram;
 import org.apache.skywalking.oap.server.library.util.prometheus.metrics.Metric;
 
 import static java.util.stream.Collectors.toMap;
@@ -30,9 +34,19 @@ import static java.util.stream.Collectors.toMap;
 @RequiredArgsConstructor
 public class ProtoMetricFamily2MetricsAdapter {
     protected final Metrics.MetricFamily metricFamily;
+    private final ClusterManagerMetricsAdapter clusterManagerMetricsAdapter;
 
     public Stream<Metric> adapt() {
         switch (metricFamily.getType()) {
+            case COUNTER:
+                return metricFamily.getMetricList()
+                                   .stream()
+                                   .map(it -> Counter.builder()
+                                                     .name(adaptMetricsName(it))
+                                                     .value(it.getCounter().getValue())
+                                                     .timestamp(adaptTimestamp(it))
+                                                     .labels(adaptLabels(it))
+                                                     .build());
             case GAUGE:
                 return metricFamily.getMetricList()
                                    .stream()
@@ -42,13 +56,27 @@ public class ProtoMetricFamily2MetricsAdapter {
                                                    .timestamp(adaptTimestamp(it))
                                                    .labels(adaptLabels(it))
                                                    .build());
+            case HISTOGRAM:
+                return metricFamily.getMetricList()
+                                   .stream()
+                                   .map(it -> Histogram.builder()
+                                                       .name(adaptMetricsName(it))
+                                                       .labels(adaptLabels(it))
+                                                       .sampleCount(it.getHistogram().getSampleCount())
+                                                       .sampleSum(it.getHistogram().getSampleSum())
+                                                       .buckets(buildBuckets(it.getHistogram().getBucketList()))
+                                                       .build()
+                                   );
             default:
                 return Stream.of();
         }
     }
 
-    @SuppressWarnings("unused")
     public String adaptMetricsName(final Metrics.Metric metric) {
+        if (metricFamily.getName().startsWith("cluster.")) {
+            return clusterManagerMetricsAdapter.adaptMetricsName(metricFamily);
+        }
+
         return metricFamily.getName();
     }
 
@@ -57,9 +85,14 @@ public class ProtoMetricFamily2MetricsAdapter {
     }
 
     public Map<String, String> adaptLabels(final Metrics.Metric metric) {
-        return metric.getLabelList()
-                     .stream()
-                     .collect(toMap(Metrics.LabelPair::getName, Metrics.LabelPair::getValue));
+        Map<String, String> labels = metric.getLabelList()
+                                           .stream()
+                                           .collect(toMap(Metrics.LabelPair::getName, Metrics.LabelPair::getValue));
+        if (metricFamily.getName().startsWith("cluster.")) {
+            return clusterManagerMetricsAdapter.adaptLabels(metricFamily, labels);
+        }
+
+        return labels;
     }
 
     public long adaptTimestamp(final Metrics.Metric metric) {
@@ -80,5 +113,13 @@ public class ProtoMetricFamily2MetricsAdapter {
         }
 
         return timestamp;
+    }
+
+    private static Map<Double, Long> buildBuckets(List<Metrics.Bucket> buckets) {
+        Map<Double, Long> result = new HashMap<>();
+        for (final Metrics.Bucket bucket : buckets) {
+            result.put(bucket.getUpperBound(), bucket.getCumulativeCount());
+        }
+        return result;
     }
 }

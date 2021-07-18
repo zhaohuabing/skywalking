@@ -48,6 +48,7 @@ import org.apache.skywalking.oap.server.core.config.IComponentLibraryCatalogServ
 import org.apache.skywalking.oap.server.core.config.NamingControl;
 import org.apache.skywalking.oap.server.core.config.group.EndpointNameGrouping;
 import org.apache.skywalking.oap.server.core.config.group.EndpointNameGroupingRuleWatcher;
+import org.apache.skywalking.oap.server.core.config.group.openapi.EndpointGroupingRuleReader4Openapi;
 import org.apache.skywalking.oap.server.core.management.ui.template.UITemplateInitializer;
 import org.apache.skywalking.oap.server.core.management.ui.template.UITemplateManagementService;
 import org.apache.skywalking.oap.server.core.oal.rt.DisableOALDefine;
@@ -159,6 +160,11 @@ public class CoreModuleProvider extends ModuleProvider {
         try {
             endpointNameGroupingRuleWatcher = new EndpointNameGroupingRuleWatcher(
                 this, endpointNameGrouping);
+
+            if (moduleConfig.isEnableEndpointNameGroupingByOpenapi()) {
+                endpointNameGrouping.setEndpointGroupingRule4Openapi(
+                    new EndpointGroupingRuleReader4Openapi("openapi-definitions").read());
+            }
         } catch (FileNotFoundException e) {
             throw new ModuleStartException(e.getMessage(), e);
         }
@@ -215,6 +221,8 @@ public class CoreModuleProvider extends ModuleProvider {
                                                                .jettyMaxThreads(moduleConfig.getRestMaxThreads())
                                                                .jettyAcceptQueueSize(
                                                                    moduleConfig.getRestAcceptQueueSize())
+                                                               .jettyHttpMaxRequestHeaderSize(
+                                                                   moduleConfig.getHttpMaxRequestHeaderSize())
                                                                .build();
         jettyServer = new JettyServer(jettyServerConfig);
         jettyServer.initialize();
@@ -282,7 +290,10 @@ public class CoreModuleProvider extends ModuleProvider {
         this.registerServiceImplementation(
             UITemplateManagementService.class, new UITemplateManagementService(getManager()));
 
-        MetricsStreamProcessor.getInstance().setEnableDatabaseSession(moduleConfig.isEnableDatabaseSession());
+        final MetricsStreamProcessor metricsStreamProcessor = MetricsStreamProcessor.getInstance();
+        metricsStreamProcessor.setEnableDatabaseSession(moduleConfig.isEnableDatabaseSession());
+        metricsStreamProcessor.setL1FlushPeriod(moduleConfig.getL1FlushPeriod());
+        metricsStreamProcessor.setStorageSessionTimeout(moduleConfig.getStorageSessionTimeout());
         TopNStreamProcessor.getInstance().setTopNWorkerReportCycle(moduleConfig.getTopNReportPeriod());
         apdexThresholdConfig = new ApdexThresholdConfig(this);
         ApdexMetrics.setDICT(apdexThresholdConfig);

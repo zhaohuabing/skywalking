@@ -23,7 +23,7 @@
     <parent>
         <groupId>org.apache.skywalking</groupId>
         <artifactId>apm-sniffer</artifactId>
-        <version>8.6.0-SNAPSHOT</version>
+        <version>8.7.0-SNAPSHOT</version>
     </parent>
 
     <artifactId>apm-sdk-plugin</artifactId>
@@ -39,17 +39,17 @@
         <module>mongodb-4.x-plugin</module>
         <module>feign-default-http-9.x-plugin</module>
         <module>okhttp-3.x-plugin</module>
+        <module>okhttp-4.x-plugin</module>
+        <module>okhttp-common</module>
         <module>spring-plugins</module>
         <module>struts2-2.x-plugin</module>
         <module>nutz-plugins</module>
         <module>jetty-plugin</module>
         <module>spymemcached-2.x-plugin</module>
-        <module>sharding-jdbc-1.5.x-plugin</module>
         <module>sharding-sphere-3.x-plugin</module>
-        <module>sharding-sphere-4.x-plugin</module>
-        <module>sharding-sphere-4.x-RC3-plugin</module>
         <module>sharding-sphere-4.0.x-plugin</module>
         <module>sharding-sphere-4.1.0-plugin</module>
+        <module>shardingsphere-5.0.0-beta-plugin</module>
         <module>xmemcached-2.x-plugin</module>
         <module>grpc-1.x-plugin</module>
         <module>mysql-5.x-plugin</module>
@@ -84,7 +84,6 @@
         <module>solrj-7.x-plugin</module>
         <module>cassandra-java-driver-3.x-plugin</module>
         <module>light4j-plugins</module>
-        <module>ehcache-2.x-plugin</module>
         <module>pulsar-plugin</module>
         <module>netty-socketio-plugin</module>
         <module>armeria-0.84.x-plugin</module>
@@ -110,6 +109,7 @@
         <module>mssql-jdbc-plugin</module>
         <module>cxf-3.x-plugin</module>
         <module>jsonrpc4j-1.x-plugin</module>
+        <module>neo4j-4.x-plugin</module>
     </modules>
     <packaging>pom</packaging>
 

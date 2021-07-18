@@ -212,7 +212,7 @@ public class SampleFamily {
         }
         if (by == null) {
             double result = Arrays.stream(samples).mapToDouble(Sample::getValue).average().orElse(0.0D);
-            return SampleFamily.build(this.context, InternalOps.newSample(ImmutableMap.of(), samples[0].timestamp, result));
+            return SampleFamily.build(this.context, InternalOps.newSample(samples[0].name, ImmutableMap.of(), samples[0].timestamp, result));
         }
 
         return SampleFamily.build(
@@ -221,6 +221,7 @@ public class SampleFamily {
                   .collect(groupingBy(it -> InternalOps.getLabels(by, it), mapping(identity(), toList())))
                   .entrySet().stream()
                   .map(entry -> InternalOps.newSample(
+                      entry.getValue().get(0).getName(),
                       entry.getKey(),
                       entry.getValue().get(0).getTimestamp(),
                       entry.getValue().stream().mapToDouble(Sample::getValue).average().orElse(0.0D)
@@ -236,7 +237,7 @@ public class SampleFamily {
         }
         if (by == null) {
             double result = Arrays.stream(samples).mapToDouble(s -> s.value).reduce(aggregator).orElse(0.0D);
-            return SampleFamily.build(this.context, InternalOps.newSample(ImmutableMap.of(), samples[0].timestamp, result));
+            return SampleFamily.build(this.context, InternalOps.newSample(samples[0].name, ImmutableMap.of(), samples[0].timestamp, result));
         }
         return SampleFamily.build(
             this.context,
@@ -244,6 +245,7 @@ public class SampleFamily {
                   .collect(groupingBy(it -> InternalOps.getLabels(by, it), mapping(identity(), toList())))
                   .entrySet().stream()
                   .map(entry -> InternalOps.newSample(
+                      entry.getValue().get(0).getName(),
                       entry.getKey(),
                       entry.getValue().get(0).getTimestamp(),
                       entry.getValue().stream().mapToDouble(Sample::getValue).reduce(aggregator).orElse(0.0D)
@@ -286,7 +288,20 @@ public class SampleFamily {
     }
 
     public SampleFamily irate() {
-        return rate("PT1S");
+        if (this == EMPTY) {
+            return EMPTY;
+        }
+        return SampleFamily.build(
+            this.context,
+            Arrays.stream(samples)
+                  .map(sample -> sample.increase(
+                      (lowerBoundValue, lowerBoundTime) -> {
+                          final long timeDiff = (sample.timestamp - lowerBoundTime) / 1000;
+                          return timeDiff < 1L ? 0.0 : (sample.value - lowerBoundValue) / timeDiff;
+                      }
+                  ))
+                  .toArray(Sample[]::new)
+        );
     }
 
     @SuppressWarnings(value = "unchecked")
@@ -355,7 +370,7 @@ public class SampleFamily {
                               .putAll(Maps.filterKeys(s.labels, key -> !Objects.equals(key, le)))
                               .put("le", String.valueOf((long) ((Double.parseDouble(this.context.histogramType == HistogramType.ORDINARY ? s.labels.get(le) : preLe.get())) * scale))).build();
                           preLe.set(s.labels.get(le));
-                          return InternalOps.newSample(ll, s.timestamp, r);
+                          return InternalOps.newSample(s.name, ll, s.timestamp, r);
                       })
             ).toArray(Sample[]::new)
         );
@@ -539,11 +554,12 @@ public class SampleFamily {
             }
         }
 
-        private static Sample newSample(ImmutableMap<String, String> labels, long timestamp, double newValue) {
+        private static Sample newSample(String name, ImmutableMap<String, String> labels, long timestamp, double newValue) {
             return Sample.builder()
                          .value(newValue)
                          .labels(labels)
                          .timestamp(timestamp)
+                         .name(name)
                          .build();
         }
 

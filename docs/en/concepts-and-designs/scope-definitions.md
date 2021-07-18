@@ -30,6 +30,8 @@ This calculates the metrics data from each request of the service.
 | type | The type of each request. Such as: Database, HTTP, RPC, gRPC. | | enum |
 | tags | The labels of each request. Each value is made up by `TagKey:TagValue` in the segment. | | `List<String>` |
 | sideCar.internalErrorCode | The sidecar/gateway proxy internal error code. The value is based on the implementation. | | string|
+| tcpInfo.receivedBytes | The received bytes of the TCP traffic, if this request is a TCP call. | | long |
+| tcpInfo.sentBytes | The sent bytes of the TCP traffic, if this request is a TCP call. | | long |
 
 ### SCOPE `ServiceInstance`
 
@@ -47,6 +49,8 @@ This calculates the metrics data from each request of the service instance.
 | type | The type of each request, such as Database, HTTP, RPC, or gRPC. | | enum |
 | tags | The labels of each request. Each value is made up by `TagKey:TagValue` in the segment. | | `List<String>` |
 | sideCar.internalErrorCode | The sidecar/gateway proxy internal error code. The value is based on the implementation. | | string|
+| tcpInfo.receivedBytes | The received bytes of the TCP traffic, if this request is a TCP call. | | long |
+| tcpInfo.sentBytes | The sent bytes of the TCP traffic, if this request is a TCP call. | | long |
 
 #### Secondary scopes of `ServiceInstance` 
 
@@ -100,9 +104,23 @@ This calculates the metrics data if the service instance is a JVM and collects t
 |---|---|---|---|
 | name |  The name of the service instance, such as `ip:port@Service Name`.  **Note**: Currently, the native agent uses `uuid@ipv4` as the instance name, which does not assist in setting up a filter in aggregation. | | string|
 | serviceName | The name of the service. | | string |
-| liveCount | The current number of live threads. | | int |
-| daemonCount | The current number of daemon threads. | | int |
-| peakCount | The current number of peak threads. | | int |
+| liveCount | The current number of live threads. | | long |
+| daemonCount | The current number of daemon threads. | | long |
+| peakCount | The current number of peak threads. | | long |
+| runnableStateThreadCount | The current number of threads in runnable state. | | long |
+| blockedStateThreadCount | The current number of threads in blocked state. | | long |
+| waitingStateThreadCount | The current number of threads in waiting state. | | long |
+| timedWaitingStateThreadCount | The current number of threads in time-waiting state. | | long |
+
+6. SCOPE `ServiceInstanceJVMClass`
+
+| Name | Remarks | Group Key | Type | 
+|---|---|---|---|
+| name |  The name of the service instance, such as `ip:port@Service Name`.  **Note**: Currently, the native agent uses `uuid@ipv4` as the instance name, which does not assist in setting up a filter in aggregation. | | string|
+| serviceName | The name of the service. | | string |
+| loadedClassCount | The number of classes that are currently loaded in the JVM. | | long |
+| totalUnloadedClassCount | The total number of classes unloaded since the JVM has started execution. | | long |
+| totalLoadedClassCount | The total number of classes that have been loaded since the JVM has started execution. | | long |
 
 ### SCOPE `Endpoint`
 
@@ -120,6 +138,8 @@ This calculates the metrics data from each request of the endpoint in the servic
 | type | The type of each request, such as Database, HTTP, RPC, or gRPC. | | enum |
 | tags | The labels of each request. Each value is made up by `TagKey:TagValue` in the segment. | | `List<String>` |
 | sideCar.internalErrorCode | The sidecar/gateway proxy internal error code. The value is based on the implementation. | | string|
+| tcpInfo.receivedBytes | The received bytes of the TCP traffic, if this request is a TCP call. | | long |
+| tcpInfo.sentBytes | The sent bytes of the TCP traffic, if this request is a TCP call. | | long |
 
 ### SCOPE `ServiceRelation`
 
@@ -142,7 +162,8 @@ This calculates the metrics data from each request between services.
 | detectPoint | Where the relation is detected. The value may be client, server, or proxy. | yes | enum|
 | tlsMode | The TLS mode between source and destination services, such as `service_relation_mtls_cpm = from(ServiceRelation.*).filter(tlsMode == "mTLS").cpm()` || string|
 | sideCar.internalErrorCode | The sidecar/gateway proxy internal error code. The value is based on the implementation. | | string|
-
+| tcpInfo.receivedBytes | The received bytes of the TCP traffic, if this request is a TCP call. | | long |
+| tcpInfo.sentBytes | The sent bytes of the TCP traffic, if this request is a TCP call. | | long |
 
 ### SCOPE `ServiceInstanceRelation`
 
@@ -165,6 +186,8 @@ This calculates the metrics data from each request between service instances.
 | detectPoint | Where the relation is detected. The value may be client, server, or proxy. | yes | enum|
 | tlsMode | The TLS mode between source and destination service instances, such as `service_instance_relation_mtls_cpm = from(ServiceInstanceRelation.*).filter(tlsMode == "mTLS").cpm()` || string|
 | sideCar.internalErrorCode | The sidecar/gateway proxy internal error code. The value is based on the implementation. | | string|
+| tcpInfo.receivedBytes | The received bytes of the TCP traffic, if this request is a TCP call. | | long |
+| tcpInfo.sentBytes | The sent bytes of the TCP traffic, if this request is a TCP call. | | long |
 
 ### SCOPE `EndpointRelation`
 
@@ -228,7 +251,7 @@ This calculates the metrics data from each request of the page in the browser ap
 
 ### SCOPE `BrowserAppPagePerf`
 
-This calculates the metrics data form each request of the page in the browser application (browser only).
+This calculates the metrics data from each request of the page in the browser application (browser only).
 
 | Name | Remarks | Group Key | Type | 
 |---|---|---|---|
@@ -248,3 +271,17 @@ This calculates the metrics data form each request of the page in the browser ap
 | ttlTime | Time to interact. | | int(in ms) |
 | firstPackTime | First pack time. | | int(in ms) |
 | fmpTime | First Meaningful Paint. | | int(in ms) |
+
+### SCOPE `Event`
+
+This calculates the metrics data from [events](event.md).
+
+| Name | Remarks | Group Key | Type | 
+|---|---|---|---|
+| name | The name of the event. |  | string |
+| service | The service name to which the event belongs to. | | string |
+| serviceInstance | The service instance to which the event belongs to, if any. | | string|
+| endpoint | The service endpoint to which the event belongs to, if any. | | string|
+| type | The type of the event, `Normal` or `Error`. | | string|
+| message | The message of the event. | | string |
+| parameters | The parameters in the `message`, see [parameters](event.md#parameters). | | string |

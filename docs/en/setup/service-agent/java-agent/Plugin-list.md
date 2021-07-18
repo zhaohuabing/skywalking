@@ -23,6 +23,7 @@
 - graphql
 - grpc-1.x
 - gson-2.8.x
+- guava-cache
 - h2-1.x
 - hbase-1.x/2.x
 - httpasyncclient-4.x
@@ -46,6 +47,7 @@
 - mongodb-3.x
 - mongodb-4.x
 - motan-0.x
+- mybatis-3.x
 - mysql-5.x
 - mysql-6.x
 - mysql-8.x
@@ -53,6 +55,7 @@
 - nutz-http-1.x
 - nutz-mvc-annotation-1.x
 - okhttp-3.x
+- okhttp-4.x
 - play-2.x
 - postgresql-8.x
 - pulsar
@@ -63,14 +66,13 @@
 - resteasy-server-3.x
 - rocketMQ-3.x
 - rocketMQ-4.x
+- sentinel-1.x
 - servicecomb-0.x
 - servicecomb-1.x
-- sharding-jdbc-1.5.x
 - sharding-sphere-3.x
 - sharding-sphere-4.0.0
 - sharding-sphere-4.1.0
-- sharding-sphere-4.x
-- sharding-sphere-4.x-rc3
+- shardingsphere-5.0.0-beta
 - sofarpc
 - solrj-7.x
 - spring-annotation
@@ -115,3 +117,5 @@
 - mssql-jdbc
 - apache-cxf-3.x
 - jsonrpc4j
+- spring-cloud-gateway-3.x
+- neo4j-4.x

@@ -34,10 +34,14 @@ on:
       - '!oap-server/**'
       - '!**.md'
 
+concurrency:
+  group: plugins-2-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   PluginsTest:
     name: Plugin
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       matrix:
@@ -52,10 +56,9 @@ jobs:
           - servicecomb-0.x-scenario
           - servicecomb-1.x-scenario
           - shardingsphere-3.x-scenario
-          - shardingsphere-4.x-RC1-RC2-scenario
-          - shardingsphere-4.x-RC3-scenario
           - shardingsphere-4.0.x-scenario
           - shardingsphere-4.x-scenario
+          - shardingsphere-5.0.0-beta-scenario
           - sofarpc-scenario
           - solrj-7.x-scenario
           - spring-3.0.x-scenario

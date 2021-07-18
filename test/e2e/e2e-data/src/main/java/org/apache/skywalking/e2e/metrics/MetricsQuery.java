@@ -69,13 +69,34 @@ public class MetricsQuery extends AbstractQuery<MetricsQuery> {
         SERVICE_INSTANCE_SLA
     };
 
+    public static String INSTANCE_JVM_MEMORY_HEAP = "instance_jvm_memory_heap";
+    public static String INSTANCE_JVM_MEMORY_HEAP_MAX = "instance_jvm_memory_heap_max";
+    public static String INSTANCE_JVM_MEMORY_NOHEAP = "instance_jvm_memory_noheap";
     public static String INSTANCE_JVM_THREAD_LIVE_COUNT = "instance_jvm_thread_live_count";
     public static String INSTANCE_JVM_THREAD_DAEMON_COUNT = "instance_jvm_thread_daemon_count";
     public static String INSTANCE_JVM_THREAD_PEAK_COUNT = "instance_jvm_thread_peak_count";
+    public static String INSTANCE_JVM_THREAD_RUNNABLE_STATE_THREAD_COUNT = "instance_jvm_thread_runnable_state_thread_count";
+    public static String INSTANCE_JVM_CLASS_LOADED_CLASS_COUNT = "instance_jvm_class_loaded_class_count";
+    public static String INSTANCE_JVM_CLASS_TOTAL_LOADED_CLASS_COUNT = "instance_jvm_class_total_loaded_class_count";
     public static String [] ALL_INSTANCE_JVM_METRICS = {
+        INSTANCE_JVM_CLASS_TOTAL_LOADED_CLASS_COUNT,
+        INSTANCE_JVM_CLASS_LOADED_CLASS_COUNT,
+        INSTANCE_JVM_THREAD_RUNNABLE_STATE_THREAD_COUNT,
+        INSTANCE_JVM_THREAD_LIVE_COUNT,
         INSTANCE_JVM_THREAD_DAEMON_COUNT,
+        INSTANCE_JVM_THREAD_PEAK_COUNT,
+        INSTANCE_JVM_MEMORY_NOHEAP,
+        INSTANCE_JVM_MEMORY_HEAP_MAX,
+        INSTANCE_JVM_MEMORY_HEAP,
+    };
+
+    public static String [] ALL_INSTANCE_JVM_METRICS_COMPAT = {
+        INSTANCE_JVM_THREAD_LIVE_COUNT,
         INSTANCE_JVM_THREAD_DAEMON_COUNT,
-        INSTANCE_JVM_THREAD_PEAK_COUNT
+        INSTANCE_JVM_THREAD_PEAK_COUNT,
+        INSTANCE_JVM_MEMORY_NOHEAP,
+        INSTANCE_JVM_MEMORY_HEAP_MAX,
+        INSTANCE_JVM_MEMORY_HEAP,
     };
 
     public static String SERVICE_RELATION_CLIENT_CPM = "service_relation_client_cpm";
@@ -137,10 +158,8 @@ public class MetricsQuery extends AbstractQuery<MetricsQuery> {
         "envoy_worker_threads_max"
     };
 
-    public static String METER_INSTANCE_PERSISTENCE_EXECUTE_PERCENTILE = "meter_oap_instance_persistence_execute_percentile";
-
     public static String[] ALL_SO11Y_LABELED_METRICS = {
-        METER_INSTANCE_PERSISTENCE_EXECUTE_PERCENTILE
+        // Nothing to check for now.
     };
     private String id;
     private String metricsName;
