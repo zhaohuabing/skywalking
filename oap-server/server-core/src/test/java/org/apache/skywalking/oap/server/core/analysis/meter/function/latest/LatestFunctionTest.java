@@ -18,65 +18,139 @@
 
 package org.apache.skywalking.oap.server.core.analysis.meter.function.latest;
 
-import java.util.Map;
+import org.apache.skywalking.oap.server.core.analysis.Layer;
+import org.apache.skywalking.oap.server.core.analysis.TimeBucket;
 import org.apache.skywalking.oap.server.core.analysis.meter.MeterEntity;
-import org.apache.skywalking.oap.server.core.storage.StorageHashMapBuilder;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.apache.skywalking.oap.server.core.analysis.meter.function.AcceptableValue;
+import org.apache.skywalking.oap.server.core.config.NamingControl;
+import org.apache.skywalking.oap.server.core.config.group.EndpointNameGrouping;
+import org.apache.skywalking.oap.server.core.storage.type.HashMapConverter;
+import org.apache.skywalking.oap.server.core.storage.type.StorageBuilder;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mockito;
 import org.mockito.Spy;
-import org.mockito.runners.MockitoJUnitRunner;
+import org.mockito.junit.jupiter.MockitoExtension;
 
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import java.util.Map;
 
-@RunWith(MockitoJUnitRunner.class)
+import static org.assertj.core.api.AssertionsForClassTypes.assertThat;
+
+@ExtendWith(MockitoExtension.class)
 public class LatestFunctionTest {
 
     @Spy
     private LatestFunction function;
 
+    @BeforeAll
+    public static void setup() {
+        MeterEntity.setNamingControl(
+            new NamingControl(512, 512, 512, new EndpointNameGrouping()));
+    }
+
+    @BeforeEach
+    public void before() {
+        function = new LatestFunctionTest.LatestFunctionInst();
+        function.setTimeBucket(TimeBucket.getMinuteTimeBucket(System.currentTimeMillis()));
+    }
+
+    @AfterAll
+    public static void tearDown() {
+        MeterEntity.setNamingControl(null);
+    }
+
     @Test
     public void testAccept() {
         long time = 1597113318673L;
-        function.accept(MeterEntity.newService("latest_sync_time"), time);
-        assertThat(function.getValue(), is(time));
+        function.accept(MeterEntity.newService("latest_sync_time", Layer.GENERAL), time);
+        assertThat(function.getValue()).isEqualTo(time);
         time = 1597113447737L;
-        function.accept(MeterEntity.newService("latest_sync_time"), time);
-        assertThat(function.getValue(), is(time));
+        function.accept(MeterEntity.newService("latest_sync_time", Layer.GENERAL), time);
+        assertThat(function.getValue()).isEqualTo(time);
     }
 
     @Test
     public void testCalculate() {
         long time1 = 1597113318673L;
         long time2 = 1597113447737L;
-        function.accept(MeterEntity.newService("latest_sync_time"), time1);
-        function.accept(MeterEntity.newService("latest_sync_time"), time2);
+        function.accept(MeterEntity.newService("latest_sync_time", Layer.GENERAL), time1);
+        function.accept(MeterEntity.newService("latest_sync_time", Layer.GENERAL), time2);
         function.calculate();
-        assertThat(function.getValue(), is(time2));
+        assertThat(function.getValue()).isEqualTo(time2);
     }
 
     @Test
     public void testSerialize() {
         long time = 1597113447737L;
-        function.accept(MeterEntity.newService("latest_sync_time"), time);
+        MeterEntity meterEntity = MeterEntity.newService("latest_sync_time", Layer.GENERAL);
+        meterEntity.setAttr0("testAttr");
+        function.accept(meterEntity, time);
         LatestFunction function2 = Mockito.spy(LatestFunction.class);
         function2.deserialize(function.serialize().build());
-        assertThat(function2.getEntityId(), is(function.getEntityId()));
-        assertThat(function2.getTimeBucket(), is(function.getTimeBucket()));
+        assertThat(function2.getEntityId()).isEqualTo(function.getEntityId());
+        assertThat(function2.getTimeBucket()).isEqualTo(function.getTimeBucket());
+        assertThat(function2.getAttr0()).isEqualTo(function.getAttr0());
     }
 
     @Test
     public void testBuilder() throws IllegalAccessException, InstantiationException {
         long time = 1597113447737L;
-        function.accept(MeterEntity.newService("latest_sync_time"), time);
+        MeterEntity meterEntity = MeterEntity.newService("latest_sync_time", Layer.GENERAL);
+        meterEntity.setAttr0("testAttr");
+        function.accept(meterEntity, time);
         function.calculate();
-        StorageHashMapBuilder<LatestFunction> storageBuilder = function.builder().newInstance();
+        StorageBuilder<LatestFunction> storageBuilder = function.builder().newInstance();
 
-        Map<String, Object> map = storageBuilder.entity2Storage(function);
+        final HashMapConverter.ToStorage toStorage = new HashMapConverter.ToStorage();
+        storageBuilder.entity2Storage(function, toStorage);
+        final Map<String, Object> map = toStorage.obtain();
         map.put(LatestFunction.VALUE, map.get(LatestFunction.VALUE));
 
-        LatestFunction function2 = storageBuilder.storage2Entity(map);
-        assertThat(function2.getValue(), is(function.getValue()));
+        LatestFunction function2 = storageBuilder.storage2Entity(new HashMapConverter.ToEntity(map));
+        assertThat(function2.getAttr0()).isEqualTo(function.getAttr0());
+    }
+
+    @Test
+    public void testToHour() {
+        long time1 = 100;
+        long time2 = 200;
+        function.setTimeBucket(TimeBucket.getMinuteTimeBucket(System.currentTimeMillis()));
+        MeterEntity meterEntity = MeterEntity.newService("latest_sync_time", Layer.GENERAL);
+        meterEntity.setAttr0("testAttr");
+        function.accept(meterEntity, time1);
+        function.accept(meterEntity, time2);
+        function.calculate();
+
+        final LatestFunction hourFunction = (LatestFunction) function.toHour();
+        hourFunction.calculate();
+
+        assertThat(hourFunction.getValue()).isEqualTo(time2);
+        assertThat(hourFunction.getAttr0()).isEqualTo("testAttr");
+    }
+
+    @Test
+    public void testToDay() {
+        long time1 = 100;
+        long time2 = 200;
+        MeterEntity meterEntity = MeterEntity.newService("latest_sync_time", Layer.GENERAL);
+        meterEntity.setAttr0("testAttr");
+        function.accept(meterEntity, time1);
+        function.accept(meterEntity, time2);
+        function.calculate();
+
+        final LatestFunction dayFunction = (LatestFunction) function.toDay();
+        dayFunction.calculate();
+        assertThat(dayFunction.getValue()).isEqualTo(time2);
+        assertThat(dayFunction.getAttr0()).isEqualTo("testAttr");
+    }
+
+    private static class LatestFunctionInst extends LatestFunction {
+        @Override
+        public AcceptableValue<Long> createNew() {
+            return new LatestFunctionInst();
+        }
     }
 }

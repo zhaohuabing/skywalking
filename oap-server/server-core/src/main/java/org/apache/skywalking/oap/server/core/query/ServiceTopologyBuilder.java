@@ -22,26 +22,32 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.skywalking.apm.util.StringUtil;
 import org.apache.skywalking.oap.server.core.Const;
 import org.apache.skywalking.oap.server.core.CoreModule;
 import org.apache.skywalking.oap.server.core.analysis.IDManager;
-import org.apache.skywalking.oap.server.core.analysis.NodeType;
+import org.apache.skywalking.oap.server.core.analysis.Layer;
 import org.apache.skywalking.oap.server.core.analysis.manual.networkalias.NetworkAddressAlias;
 import org.apache.skywalking.oap.server.core.cache.NetworkAddressAliasCache;
 import org.apache.skywalking.oap.server.core.config.IComponentLibraryCatalogService;
 import org.apache.skywalking.oap.server.core.query.type.Call;
 import org.apache.skywalking.oap.server.core.query.type.Node;
+import org.apache.skywalking.oap.server.core.query.type.Service;
 import org.apache.skywalking.oap.server.core.query.type.Topology;
+import org.apache.skywalking.oap.server.core.query.type.debugging.DebuggingSpan;
+import org.apache.skywalking.oap.server.core.query.type.debugging.DebuggingTraceContext;
 import org.apache.skywalking.oap.server.core.source.DetectPoint;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
 
 @Slf4j
 class ServiceTopologyBuilder {
     private final IComponentLibraryCatalogService componentLibraryCatalogService;
     private final NetworkAddressAliasCache networkAddressAliasCache;
     private final String userID;
+    private final ModuleManager moduleManager;
+    private MetadataQueryService metadataQueryService;
 
     ServiceTopologyBuilder(ModuleManager moduleManager) {
         this.componentLibraryCatalogService = moduleManager.find(CoreModule.NAME)
@@ -50,9 +56,36 @@ class ServiceTopologyBuilder {
         this.networkAddressAliasCache = moduleManager.find(CoreModule.NAME)
                                                      .provider()
                                                      .getService(NetworkAddressAliasCache.class);
-        this.userID = IDManager.ServiceID.buildId(Const.USER_SERVICE_NAME, NodeType.User);
+        this.userID = IDManager.ServiceID.buildId(Const.USER_SERVICE_NAME, false);
+        this.moduleManager = moduleManager;
     }
 
+    private MetadataQueryService getMetadataQueryService() {
+        if (metadataQueryService == null) {
+            this.metadataQueryService = moduleManager.find(CoreModule.NAME)
+                                                     .provider()
+                                                     .getService(MetadataQueryService.class);
+        }
+        return metadataQueryService;
+    }
+
+    Topology buildDebuggable(List<Call.CallDetail> serviceRelationClientCalls,
+                             List<Call.CallDetail> serviceRelationServerCalls) {
+        DebuggingTraceContext traceContext = DebuggingTraceContext.TRACE_CONTEXT.get();
+        DebuggingSpan span = null;
+        try {
+            if (traceContext != null) {
+                span = traceContext.createSpan("Build service topology");
+            }
+            return build(serviceRelationClientCalls, serviceRelationServerCalls);
+        } finally {
+            if (traceContext != null && span != null) {
+                traceContext.stopSpan(span);
+            }
+        }
+    }
+
+    @SneakyThrows
     Topology build(List<Call.CallDetail> serviceRelationClientCalls, List<Call.CallDetail> serviceRelationServerCalls) {
 
         Map<String, Node> nodes = new HashMap<>();
@@ -68,17 +101,33 @@ class ServiceTopologyBuilder {
             String targetServiceId = clientCall.getTarget();
 
             /*
-             * Use the alias name to make topology relationship accurate.
+             * Use the alias name to make topology relationship accurate. Only a destination no service is registered
+             * under is named by the address it was dialed at: the agent path stores an unresolved HTTP or RPC peer
+             * with a real id yet never registers it. A registered service whose name happens to equal some alias
+             * address, such as an OTLP service called `frontend` while an agent registered the host `frontend` for
+             * another service, keeps its own node. A self-call is folded too when the alias names another service:
+             * a caller that dials its downstream by its own service name, as the nginx-lua agent's
+             * `tracer:start(upstream)` may, records itself as the destination until the downstream's alias lands.
              */
-            if (!destService.isReal()
-                && networkAddressAliasCache.get(destService.getName()) != null) {
+            // The OTLP trace analysis files an alias under the caller and the address, see
+            // IDManager.NetworkAddressAliasDefine#buildCallerScopedAddress; the agent path under the address alone.
+            final NetworkAddressAlias callerScopedAlias = networkAddressAliasCache.get(
+                IDManager.NetworkAddressAliasDefine.buildCallerScopedAddress(
+                    sourceService.getName(), destService.getName()));
+            final NetworkAddressAlias networkAddressAlias = callerScopedAlias != null
+                ? callerScopedAlias : networkAddressAliasCache.get(destService.getName());
+            if (networkAddressAlias != null
+                && (getMetadataQueryService().getService(targetServiceId) == null
+                || (targetServiceId.equals(sourceServiceId)
+                && !networkAddressAlias.getRepresentServiceId().equals(sourceServiceId)))) {
                 /*
                  * If alias exists, mean this network address is representing a real service.
                  */
-                final NetworkAddressAlias networkAddressAlias = networkAddressAliasCache.get(destService.getName());
                 destService = IDManager.ServiceID.analysisId(
                     networkAddressAlias.getRepresentServiceId());
-                targetServiceId = IDManager.ServiceID.buildId(destService.getName(), NodeType.Normal);
+                // The row's own id keeps the represented service's normal flag; the OTLP trace analysis writes a
+                // callee filed under a virtual layer as not normal.
+                targetServiceId = networkAddressAlias.getRepresentServiceId();
             }
 
             /*
@@ -110,6 +159,9 @@ class ServiceTopologyBuilder {
                 call.addDetectPoint(DetectPoint.CLIENT);
                 call.addSourceComponent(componentLibraryCatalogService.getComponentName(clientCall.getComponentId()));
                 calls.add(call);
+            } else {
+                Call call = callMap.get(relationId);
+                call.addSourceComponent(componentLibraryCatalogService.getComponentName(clientCall.getComponentId()));
             }
         }
 
@@ -151,8 +203,24 @@ class ServiceTopologyBuilder {
              * Set the node type due to service side component id has higher priority
              */
             final Node serverSideNode = nodes.get(serverCall.getTarget());
-            serverSideNode.setType(
-                componentLibraryCatalogService.getComponentName(serverCall.getComponentId()));
+            final String nodeType = serverSideNode.getType();
+            if (nodeType == null || !serverSideNode.hasSetOnceAtServerSide()) {
+                serverSideNode.setTypeFromServerSide(
+                    componentLibraryCatalogService.getComponentName(serverCall.getComponentId()));
+            } else {
+                final Integer componentId = componentLibraryCatalogService.getComponentId(nodeType);
+                if (componentId != null) {
+                    if (componentLibraryCatalogService.compare(componentId, serverCall.getComponentId())) {
+                        serverSideNode.setTypeFromServerSide(
+                            componentLibraryCatalogService.getComponentName(serverCall.getComponentId()));
+                    } else {
+                        //Do nothing, as the current value has higher priority
+                    }
+                } else {
+                    serverSideNode.setTypeFromServerSide(
+                        componentLibraryCatalogService.getComponentName(serverCall.getComponentId()));
+                }
+            }
 
             if (!callMap.containsKey(serverCall.getId())) {
                 Call call = new Call();
@@ -176,11 +244,18 @@ class ServiceTopologyBuilder {
         return topology;
     }
 
+    @SneakyThrows
     private Node buildNode(String sourceId, IDManager.ServiceID.ServiceIDDefinition sourceService) {
         Node serviceNode = new Node();
         serviceNode.setId(sourceId);
         serviceNode.setName(sourceService.getName());
         serviceNode.setReal(sourceService.isReal());
+        Service service = getMetadataQueryService().getService(sourceId);
+        if (service != null) {
+            serviceNode.getLayers().addAll(service.getLayers());
+        } else {
+            serviceNode.getLayers().add(Layer.UNDEFINED.name());
+        }
         return serviceNode;
     }
 }

@@ -18,13 +18,12 @@
 
 package org.apache.skywalking.oap.server.core.storage.annotation;
 
+import org.apache.skywalking.oap.server.core.storage.model.ModelManipulator;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import lombok.Getter;
-import org.apache.skywalking.oap.server.core.query.sql.Function;
-import org.apache.skywalking.oap.server.core.storage.model.ModelManipulator;
 
 /**
  * Data column of all persistent entity.
@@ -33,15 +32,14 @@ import org.apache.skywalking.oap.server.core.storage.model.ModelManipulator;
 @Retention(RetentionPolicy.RUNTIME)
 public @interface Column {
     /**
-     * column name in the storage. Most of the storage will keep the name consistently. But in same cases, this name
+     * Column name in the storage. Most of the storage will keep the name consistently. But in same cases, this name
      * could be a keyword, then, the implementation will use {@link ModelManipulator} to replace the column name.
+     * <p>
+     * Be careful not to use the same column name for two models with the same type (metrics/record), which causes
+     * column conflicts in storage implementations that merge all metrics/records models into a single table/index.
+     * Also check {@code legacyName()}.
      */
-    String columnName();
-
-    /**
-     * The function is used in aggregation query.
-     */
-    Function function() default Function.None;
+    String name();
 
     /**
      * The default value of this column, when its {@link #dataType()} != {@link ValueDataType#NOT_VALUE}.
@@ -49,33 +47,25 @@ public @interface Column {
     int defaultValue() default 0;
 
     /**
-     * Match query means using analyzer(if storage have) to do key word match query.
-     */
-    boolean matchQuery() default false;
-
-    /**
-     * The column is just saved, never used in query.
+     * The column is just saved, never used as a query condition.
      */
     boolean storageOnly() default false;
+
+    /**
+     * The column(field) is just indexed, never stored(not available in query projection).
+     * Note: this feature only supported by elasticsearch.
+     */
+    boolean indexOnly() default false;
 
     /**
      * @return the length of this column, this is only for {@link String} column. The usage of this depends on the
      * storage implementation.
      *
-     * Notice, different lengths may cause different types.
-     * Such as, over 16383 would make the type in MySQL to be MEDIUMTEXT, due to database varchar max=16383
-     *
+     * Notice, different lengths may cause different types. Such as, over 16383 would make the type in MySQL to be
+     * MEDIUMTEXT, due to database varchar max=16383.
      * @since 7.1.0
      */
     int length() default 200;
-
-    /**
-     * The return name of system environment could provide an override value of the length limitation.
-     * @return the variable name of system environment.
-     *
-     * @since 8.2.0
-     */
-    String lengthEnvVariable() default "";
 
     /**
      * Column with data type != {@link ValueDataType#NOT_VALUE} represents this is a value column. Indicate it would be
@@ -88,32 +78,12 @@ public @interface Column {
     ValueDataType dataType() default ValueDataType.NOT_VALUE;
 
     /**
-     * The storage analyzer mode.
-     *
-     * @since 8.4.0
+     * Since 10.0.0, multi-value column is deprecated. Use {@link ValueDataType#LABELED_VALUE} instead.
+     * This annotation is used to mark the column is a multi-value column for compatibility.
+     * @return if this column is a multi-value column.
      */
-    AnalyzerType analyzer() default AnalyzerType.OAP_ANALYZER;
-
-    /**
-     * The analyzer declares the text analysis mode.
-     */
-    enum AnalyzerType {
-        /**
-         * The default analyzer.
-         */
-        OAP_ANALYZER("oap_analyzer"),
-        /**
-         * The log analyzer.
-         */
-        OAP_LOG_ANALYZER("oap_log_analyzer");
-
-        @Getter
-        private final String name;
-
-        AnalyzerType(final String name) {
-            this.name = name;
-        }
-    }
+    @Deprecated
+    boolean multiIntValues() default false;
 
     /**
      * ValueDataType represents the data structure of value column. The persistent way of the value column determine the

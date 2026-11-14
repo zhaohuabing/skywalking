@@ -25,6 +25,7 @@ import java.util.List;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.skywalking.oap.server.core.analysis.metrics.DataTable;
 
 /**
@@ -59,7 +60,8 @@ public class HeatMap {
                 if (Bucket.INFINITE_NEGATIVE.equals(minValue)) {
                     bucket.infiniteMin();
                 } else {
-                    bucket.setMin(Integer.parseInt(minValue));
+                    // Long: a meter histogram's keys are long, its overflow bucket Long.MAX_VALUE among them.
+                    bucket.setMin(Long.parseLong(minValue));
                 }
 
                 if (i == sortedKeys.size() - 1) {
@@ -73,7 +75,7 @@ public class HeatMap {
                         bucket.infiniteMax();
                         break;
                     } else {
-                        bucket.setMax(Integer.parseInt(max));
+                        bucket.setMax(Long.parseLong(max));
                     }
                 }
                 this.addBucket(bucket);
@@ -158,7 +160,11 @@ public class HeatMap {
 
         private String[] parseKey(String key) {
             if (key.contains(":")) {
-                return key.split(":");
+                // split the group and bucket
+                return new String[] {
+                    StringUtils.substringBeforeLast(key, ":"),
+                    StringUtils.substringAfterLast(key, ":"),
+                };
             }
             return new String[] {"default", key};
         }

@@ -21,23 +21,33 @@ package org.apache.skywalking.oap.server.core.config;
 import java.io.FileNotFoundException;
 import java.io.Reader;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.skywalking.oap.server.library.util.ResourceUtils;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
 
 /**
  * Load settings from component-libraries.yml this file includes all component defines, and the component mappings,
  * which declare the real server type based on client component.
  */
+@Slf4j
 public class ComponentLibraryCatalogService implements IComponentLibraryCatalogService {
-    private static final Logger LOGGER = LoggerFactory.getLogger(ComponentLibraryCatalogService.class);
     private static final String COMPONENT_SERVER_MAPPING_SECTION = "Component-Server-Mappings";
 
     private Map<String, Integer> componentName2Id;
+    /**
+     * The catalog names folded to lower case, for {@link #getComponentIdIgnoreCase}; the first of two names that
+     * differ only in case wins, which the shipped catalog never has.
+     */
+    private Map<String, Integer> lowerCaseName2Id;
     private Map<Integer, String> componentId2Name;
     private Map<Integer, Integer> componentId2ServerId;
+    /**
+     * Key is the component ID.
+     * Value is the priority.
+     */
+    private Map<Integer, Integer> componentIDPriorities;
 
     public ComponentLibraryCatalogService() throws InitialComponentCatalogException {
         init();
@@ -46,6 +56,19 @@ public class ComponentLibraryCatalogService implements IComponentLibraryCatalogS
     @Override
     public int getComponentId(String componentName) {
         return componentName2Id.get(componentName);
+    }
+
+    @Override
+    public int getComponentIdIgnoreCase(String componentName) {
+        if (componentName == null) {
+            return 0;
+        }
+        final Integer exact = componentName2Id.get(componentName);
+        if (exact != null) {
+            return exact;
+        }
+        final Integer folded = lowerCaseName2Id.get(componentName.toLowerCase(Locale.ROOT));
+        return folded == null ? 0 : folded;
     }
 
     @Override
@@ -70,9 +93,11 @@ public class ComponentLibraryCatalogService implements IComponentLibraryCatalogS
     private void init() throws InitialComponentCatalogException {
         componentName2Id = new HashMap<>();
         componentName2Id.put("N/A", 0);
+        lowerCaseName2Id = new HashMap<>();
         componentId2Name = new HashMap<>();
         componentId2Name.put(0, "N/A");
         componentId2ServerId = new HashMap<>();
+        componentIDPriorities = new HashMap<>();
 
         Map<String, String> nameMapping = new HashMap<>();
         try {
@@ -89,7 +114,13 @@ public class ComponentLibraryCatalogService implements IComponentLibraryCatalogS
                 } else {
                     Integer componentId = (Integer) settings.get("id");
                     componentName2Id.put((String) componentName, componentId);
+                    lowerCaseName2Id.putIfAbsent(((String) componentName).toLowerCase(Locale.ROOT), componentId);
                     componentId2Name.put(componentId, (String) componentName);
+                    Integer priority = (Integer) settings.get("priority");
+                    if (priority == null) {
+                        priority = 50;
+                    }
+                    componentIDPriorities.put(componentId, priority);
                 }
             });
 
@@ -107,8 +138,17 @@ public class ComponentLibraryCatalogService implements IComponentLibraryCatalogS
             });
             nameMapping.clear();
         } catch (FileNotFoundException e) {
-            LOGGER.error("component-libraries.yml not found.", e);
+            log.error("component-libraries.yml not found.", e);
         }
 
+    }
+
+    /**
+     * @return true if the given componentB has high priority
+     */
+    public boolean compare(int componentA, int componentB) {
+        final Integer priorityA = componentIDPriorities.getOrDefault(componentA, 50);
+        final Integer priorityB = componentIDPriorities.getOrDefault(componentB, 50);
+        return priorityA.compareTo(priorityB) < 0;
     }
 }

@@ -20,128 +20,117 @@ package org.apache.skywalking.oap.server.core.alarm.provider.wechat;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.server.ServerBuilder;
+import com.linecorp.armeria.testing.junit5.server.ServerExtension;
+import org.apache.skywalking.oap.server.core.alarm.AlarmHttpDeliveryMetrics;
 import org.apache.skywalking.oap.server.core.alarm.AlarmMessage;
+import org.apache.skywalking.oap.server.core.alarm.AlarmRecoveryMessage;
+import org.apache.skywalking.oap.server.core.alarm.provider.AlarmHooksType;
 import org.apache.skywalking.oap.server.core.alarm.provider.AlarmRulesWatcher;
 import org.apache.skywalking.oap.server.core.alarm.provider.Rules;
 import org.apache.skywalking.oap.server.core.source.DefaultScopeDefine;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.skywalking.oap.server.telemetry.none.MetricsCreatorNoop;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
-import javax.servlet.Servlet;
-import javax.servlet.ServletConfig;
-import javax.servlet.ServletException;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.InetSocketAddress;
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.Assert.assertTrue;
+public class WechatHookCallbackTest {
+    public static final String RECOVERED = "[Recovered]";
+    private static final AtomicBoolean IS_SUCCESS = new AtomicBoolean();
+    private static final AtomicInteger COUNT = new AtomicInteger();
+    private static final AtomicInteger RECOVERY_COUNT = new AtomicInteger();
 
-public class WechatHookCallbackTest implements Servlet {
-    private Server server;
-    private int port;
-    private volatile boolean isSuccess = false;
-    private int count;
+    @RegisterExtension
+    public static final ServerExtension SERVER = new ServerExtension() {
+        @Override
+        protected void configure(ServerBuilder sb) {
+            sb.service("/wechathook/receiveAlarm", (ctx, req) -> HttpResponse.from(
+                    req.aggregate().thenApply(r -> {
+                        final String content = r.content().toStringUtf8();
+                        final JsonObject jsonObject = new Gson().fromJson(content, JsonObject.class);
+                        final String type = jsonObject.get("msgtype").getAsString();
+                        if (type.equalsIgnoreCase("text")) {
+                            COUNT.incrementAndGet();
+                            final String textContent = ((JsonObject) jsonObject.get("text")).get("content").getAsString();
+                            if (textContent.startsWith(RECOVERED)) {
+                                RECOVERY_COUNT.incrementAndGet();
+                            }
+                            if (COUNT.get() == 3 && RECOVERY_COUNT.get() == 1) {
+                                IS_SUCCESS.set(true);
+                            }
+                            return HttpResponse.of(HttpStatus.OK);
+                        }
 
-    @Before
-    public void init() throws Exception {
-        server = new Server(new InetSocketAddress("127.0.0.1", 0));
-        ServletContextHandler servletContextHandler = new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
-        servletContextHandler.setContextPath("/wechathook");
-        server.setHandler(servletContextHandler);
-        ServletHolder servletHolder = new ServletHolder();
-        servletHolder.setServlet(this);
-        servletContextHandler.addServlet(servletHolder, "/receiveAlarm");
-        server.start();
-        port = server.getURI().getPort();
-        assertTrue(port > 0);
-    }
+                        return HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR);
+                    })
+            ));
+        }
+    };
 
     @Test
-    public void testWechatWebhook() {
+    public void testWechatWebhook() throws Exception {
         List<String> remoteEndpoints = new ArrayList<>();
-        remoteEndpoints.add("http://127.0.0.1:" + port + "/wechathook/receiveAlarm");
+        remoteEndpoints.add("http://127.0.0.1:" + SERVER.httpPort() + "/wechathook/receiveAlarm");
         Rules rules = new Rules();
         String template = "{\"msgtype\":\"text\",\"text\":{\"content\":\"Skywaling alarm: %s\"}}";
-        rules.setWecchats(WechatSettings.builder().webhooks(remoteEndpoints).textTemplate(template).build());
-        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null);
-        WechatHookCallback wechatHookCallback = new WechatHookCallback(alarmRulesWatcher);
+        String recoveryTemplate = "{\"msgtype\":\"text\",\"text\":{\"content\":\"" + RECOVERED + "Skywaling alarm: %s\"}}";
+        WechatSettings setting1 = new WechatSettings("setting1", AlarmHooksType.wechat, true);
+        setting1.setWebhooks(remoteEndpoints);
+        setting1.setTextTemplate(template);
+        setting1.setRecoveryTextTemplate(recoveryTemplate);
+        WechatSettings setting2 = new WechatSettings("setting2", AlarmHooksType.wechat, false);
+        setting2.setWebhooks(remoteEndpoints);
+        setting2.setTextTemplate(template);
+        setting2.setRecoveryTextTemplate(recoveryTemplate);
+        rules.getWechatSettingsMap().put(setting1.getFormattedName(), setting1);
+        rules.getWechatSettingsMap().put(setting2.getFormattedName(), setting2);
+        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null, null);
+        WechatHookCallback wechatHookCallback = new WechatHookCallback(alarmRulesWatcher, HttpClient.newHttpClient(), Duration.ofSeconds(12), new AlarmHttpDeliveryMetrics(new MetricsCreatorNoop()));
         List<AlarmMessage> alarmMessages = new ArrayList<>(2);
+        List<AlarmMessage> alarmRecoveryMessages = new ArrayList<>(1);
         AlarmMessage alarmMessage = new AlarmMessage();
-        alarmMessage.setScopeId(DefaultScopeDefine.ALL);
+        alarmMessage.setScopeId(DefaultScopeDefine.SERVICE);
         alarmMessage.setRuleName("service_resp_time_rule");
         alarmMessage.setAlarmMessage("alarmMessage with [DefaultScopeDefine.All]");
+        alarmMessage.getHooks().add(setting1.getFormattedName());
         alarmMessages.add(alarmMessage);
         AlarmMessage anotherAlarmMessage = new AlarmMessage();
         anotherAlarmMessage.setRuleName("service_resp_time_rule_2");
         anotherAlarmMessage.setScopeId(DefaultScopeDefine.ENDPOINT);
         anotherAlarmMessage.setAlarmMessage("anotherAlarmMessage with [DefaultScopeDefine.Endpoint]");
+        anotherAlarmMessage.getHooks().add(setting2.getFormattedName());
         alarmMessages.add(anotherAlarmMessage);
         wechatHookCallback.doAlarm(alarmMessages);
-        Assert.assertTrue(isSuccess);
+        AlarmRecoveryMessage alarmRecoveryMessage = new AlarmRecoveryMessage(anotherAlarmMessage);
+        alarmRecoveryMessages.add(alarmRecoveryMessage);
+        wechatHookCallback.doAlarmRecovery(alarmRecoveryMessages);
+        Assertions.assertTrue(IS_SUCCESS.get());
     }
 
-    @After
-    public void stop() throws Exception {
-        server.stop();
-    }
+    @Test
+    public void errorCodesInAcceptedBodyAreClassified() {
+        final WechatHookCallback callback = new WechatHookCallback(
+            new AlarmRulesWatcher(new Rules(), null, null), HttpClient.newHttpClient(), Duration.ofSeconds(12),
+            new AlarmHttpDeliveryMetrics(new MetricsCreatorNoop()));
 
-    @Override
-    public void init(ServletConfig servletConfig) throws ServletException {
-
-    }
-
-    @Override
-    public ServletConfig getServletConfig() {
-        return null;
-    }
-
-    @Override
-    public void service(ServletRequest request, ServletResponse response) throws ServletException, IOException {
-        HttpServletRequest httpServletRequest = (HttpServletRequest) request;
-        if (httpServletRequest.getContentType().equals("application/json")) {
-            InputStream inputStream = request.getInputStream();
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buffer = new byte[2048];
-            int readCntOnce;
-
-            while ((readCntOnce = inputStream.read(buffer)) >= 0) {
-                out.write(buffer, 0, readCntOnce);
-            }
-
-            JsonObject jsonObject = new Gson().fromJson(new String(out.toByteArray()), JsonObject.class);
-            String type = jsonObject.get("msgtype").getAsString();
-            if (type.equalsIgnoreCase("text")) {
-                ((HttpServletResponse) response).setStatus(200);
-                count = count + 1;
-                if (count == 2) {
-                    isSuccess = true;
-                }
-                return;
-            }
-
-            ((HttpServletResponse) response).setStatus(500);
-        }
-    }
-
-    @Override
-    public String getServletInfo() {
-        return null;
-    }
-
-    @Override
-    public void destroy() {
-
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_SUCCESS, callback.classifyAcceptedBody(
+            "{\"errcode\":0,\"errmsg\":\"ok\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED, callback.classifyAcceptedBody(
+            "{\"errcode\":93000,\"errmsg\":\"invalid webhook url\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_RATE_LIMITED, callback.classifyAcceptedBody(
+            "{\"errcode\":45009,\"errmsg\":\"api freq out of limit\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_SERVER_ERROR, callback.classifyAcceptedBody(
+            "{\"errcode\":-1,\"errmsg\":\"system busy\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_REJECTED, callback.classifyAcceptedBody(
+            "{\"errcode\":40058,\"errmsg\":\"markdown.content exceed max length 4096\"}"));
     }
 }

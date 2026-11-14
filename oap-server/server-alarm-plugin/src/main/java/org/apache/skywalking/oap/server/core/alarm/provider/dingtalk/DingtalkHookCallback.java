@@ -18,78 +18,117 @@
 
 package org.apache.skywalking.oap.server.core.alarm.provider.dingtalk;
 
-import io.netty.handler.codec.http.HttpHeaderValues;
+import com.google.gson.JsonObject;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.http.HttpHeaders;
-import org.apache.http.HttpStatus;
-import org.apache.http.StatusLine;
-import org.apache.http.client.config.RequestConfig;
-import org.apache.http.client.methods.CloseableHttpResponse;
-import org.apache.http.client.methods.HttpPost;
-import org.apache.http.entity.ContentType;
-import org.apache.http.entity.StringEntity;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClients;
-import org.apache.http.util.EntityUtils;
-import org.apache.skywalking.apm.util.StringUtil;
-import org.apache.skywalking.oap.server.core.alarm.AlarmCallback;
+import org.apache.skywalking.oap.server.core.alarm.AlarmHttpDeliveryMetrics;
 import org.apache.skywalking.oap.server.core.alarm.AlarmMessage;
+import org.apache.skywalking.oap.server.core.alarm.HttpAlarmCallback;
+import org.apache.skywalking.oap.server.core.alarm.provider.AlarmHooksType;
 import org.apache.skywalking.oap.server.core.alarm.provider.AlarmRulesWatcher;
+import org.apache.skywalking.oap.server.library.util.CollectionUtils;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
-import java.io.IOException;
 import java.io.UnsupportedEncodingException;
+import java.net.URI;
 import java.net.URLEncoder;
+import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
 import java.security.InvalidKeyException;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Use SkyWalking alarm dingtalk webhook API.
  */
 @Slf4j
-public class DingtalkHookCallback implements AlarmCallback {
+public class DingtalkHookCallback extends HttpAlarmCallback {
+    /**
+     * Error codes of the custom robot API, besides {@code 310000} and {@code 40035}, which stand for more than one
+     * reason and are read with their {@code errmsg}. Any other code is {@code rejected}.
+     */
+    private static final Map<String, String> ERROR_CODE_RESULTS = Map.of(
+        "-1", AlarmHttpDeliveryMetrics.RESULT_SERVER_ERROR,
+        "300001", AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED,
+        "400101", AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED,
+        "400102", AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED,
+        "400106", AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED,
+        "130101", AlarmHttpDeliveryMetrics.RESULT_RATE_LIMITED,
+        "410100", AlarmHttpDeliveryMetrics.RESULT_RATE_LIMITED
+    );
 
-    private static final int HTTP_CONNECT_TIMEOUT = 1000;
-    private static final int HTTP_CONNECTION_REQUEST_TIMEOUT = 1000;
-    private static final int HTTP_SOCKET_TIMEOUT = 10000;
-    private AlarmRulesWatcher alarmRulesWatcher;
-    private RequestConfig requestConfig;
+    private final AlarmRulesWatcher alarmRulesWatcher;
 
-    public DingtalkHookCallback(final AlarmRulesWatcher alarmRulesWatcher) {
+    public DingtalkHookCallback(final AlarmRulesWatcher alarmRulesWatcher, final HttpClient httpClient,
+                                final Duration httpTimeout, final AlarmHttpDeliveryMetrics deliveryMetrics) {
+        super(httpClient, httpTimeout, deliveryMetrics, AlarmHooksType.dingtalk.name());
         this.alarmRulesWatcher = alarmRulesWatcher;
-        this.requestConfig = RequestConfig.custom()
-                .setConnectTimeout(HTTP_CONNECT_TIMEOUT)
-                .setConnectionRequestTimeout(HTTP_CONNECTION_REQUEST_TIMEOUT)
-                .setSocketTimeout(HTTP_SOCKET_TIMEOUT)
-                .build();
     }
 
-    /**
-     * Send alarm message if the settings not empty
-     */
     @Override
-    public void doAlarm(List<AlarmMessage> alarmMessages) {
-        if (this.alarmRulesWatcher.getDingtalkSettings() == null || this.alarmRulesWatcher.getDingtalkSettings().getWebhooks().isEmpty()) {
+    protected String classifyAcceptedBody(final String body) {
+        return jsonObjectOf(body).map(DingtalkHookCallback::resultOf).orElse(AlarmHttpDeliveryMetrics.RESULT_SUCCESS);
+    }
+
+    private static String resultOf(final JsonObject json) {
+        // The oapi gateway answers its per-IP limit with {"status":1111} instead of an errcode.
+        if (stringOf(json, "status").filter("1111"::equals).isPresent()) {
+            return AlarmHttpDeliveryMetrics.RESULT_RATE_LIMITED;
+        }
+        final String code = stringOf(json, "errcode").orElse("0");
+        final String message = stringOf(json, "errmsg").orElse("");
+        switch (code) {
+            case "0":
+                return AlarmHttpDeliveryMetrics.RESULT_SUCCESS;
+            case "310000":
+                // A failed security setting: a missing keyword, or a bad timestamp, signature or IP whitelist.
+                return message.contains("keywords not in content")
+                    ? AlarmHttpDeliveryMetrics.RESULT_REJECTED
+                    : AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED;
+            case "40035":
+                // A missing parameter: the access_token of the webhook URL, or the JSON body.
+                return message.contains("access_token")
+                    ? AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED
+                    : AlarmHttpDeliveryMetrics.RESULT_REJECTED;
+            default:
+                return ERROR_CODE_RESULTS.getOrDefault(code, AlarmHttpDeliveryMetrics.RESULT_REJECTED);
+        }
+    }
+
+    protected void doAlarmCallback(List<AlarmMessage> alarmMessages, boolean isRecovery) throws Exception {
+        Map<String, DingtalkSettings> settingsMap = alarmRulesWatcher.getDingtalkSettings();
+        if (settingsMap == null || settingsMap.isEmpty()) {
             return;
         }
-        try (CloseableHttpClient httpClient = HttpClients.custom().build()) {
-            DingtalkSettings dingtalkSettings = this.alarmRulesWatcher.getDingtalkSettings();
-            dingtalkSettings.getWebhooks().forEach(webHookUrl -> {
-                String url = getUrl(webHookUrl);
-                alarmMessages.forEach(alarmMessage -> {
-                    String requestBody = String.format(
-                            this.alarmRulesWatcher.getDingtalkSettings().getTextTemplate(), alarmMessage.getAlarmMessage()
-                    );
-                    sendAlarmMessage(httpClient, url, requestBody);
-                });
-            });
-        } catch (IOException e) {
-            log.error(e.getMessage(), e);
+        Map<String, List<AlarmMessage>> groupedMessages = groupMessagesByHook(alarmMessages);
+        for (Map.Entry<String, List<AlarmMessage>> entry : groupedMessages.entrySet()) {
+            var hookName = entry.getKey();
+            var messages = entry.getValue();
+            var setting = settingsMap.get(hookName);
+            if (setting == null || CollectionUtils.isEmpty(setting.getWebhooks()) || CollectionUtils.isEmpty(
+                    messages)) {
+                continue;
+            }
+            String template = getTemplate(setting, isRecovery);
+            if (StringUtil.isBlank(template)) {
+                continue;
+            }
+            for (final var webHookUrl : setting.getWebhooks()) {
+                final var url = getUrl(webHookUrl);
+                for (final var alarmMessage : messages) {
+                    final var requestBody = String.format(template, alarmMessage.getAlarmMessage());
+                    post(URI.create(url), requestBody, Map.of());
+                }
+            }
         }
+    }
+
+    private String getTemplate(DingtalkSettings setting, boolean isRecovery) {
+        return isRecovery ? setting.getRecoveryTextTemplate() : setting.getTextTemplate();
     }
 
     /**
@@ -107,7 +146,7 @@ public class DingtalkHookCallback implements AlarmCallback {
      */
     private String getSignUrl(DingtalkSettings.WebHookUrl webHookUrl) {
         try {
-            Long timestamp = System.currentTimeMillis();
+            final var timestamp = System.currentTimeMillis();
             return String.format("%s&timestamp=%s&sign=%s", webHookUrl.getUrl(), timestamp, sign(timestamp, webHookUrl.getSecret()));
         } catch (NoSuchAlgorithmException | UnsupportedEncodingException | InvalidKeyException e) {
             throw new RuntimeException(e);
@@ -118,42 +157,11 @@ public class DingtalkHookCallback implements AlarmCallback {
      * Sign webhook url using HmacSHA256 algorithm
      */
     private String sign(final Long timestamp, String secret) throws NoSuchAlgorithmException, UnsupportedEncodingException, InvalidKeyException {
-        String stringToSign = timestamp + "\n" + secret;
-        Mac mac = Mac.getInstance("HmacSHA256");
+        final var stringToSign = timestamp + "\n" + secret;
+        final var mac = Mac.getInstance("HmacSHA256");
         mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
-        byte[] signData = mac.doFinal(stringToSign.getBytes(StandardCharsets.UTF_8));
-        return URLEncoder.encode(new String(Base64.getEncoder().encode(signData)), StandardCharsets.UTF_8.name());
+        final var signData = mac.doFinal(stringToSign.getBytes(StandardCharsets.UTF_8));
+        return URLEncoder.encode(new String(Base64.getEncoder().encode(signData)), StandardCharsets.UTF_8);
     }
 
-    /**
-     * Send alarm message to remote endpoint
-     */
-    private void sendAlarmMessage(CloseableHttpClient httpClient, String url, String requestBody) {
-        CloseableHttpResponse httpResponse = null;
-        try {
-            HttpPost post = new HttpPost(url);
-            post.setConfig(requestConfig);
-            post.setHeader(HttpHeaders.ACCEPT, HttpHeaderValues.APPLICATION_JSON.toString());
-            post.setHeader(HttpHeaders.CONTENT_TYPE, HttpHeaderValues.APPLICATION_JSON.toString());
-            StringEntity entity = new StringEntity(requestBody, ContentType.APPLICATION_JSON);
-            post.setEntity(entity);
-            httpResponse = httpClient.execute(post);
-            StatusLine statusLine = httpResponse.getStatusLine();
-            if (statusLine != null && statusLine.getStatusCode() != HttpStatus.SC_OK) {
-                log.error("send dingtalk alarm to {} failure. Response code: {}, Response content: {}", url, statusLine.getStatusCode(),
-                        EntityUtils.toString(httpResponse.getEntity()));
-            }
-        } catch (Throwable e) {
-            log.error("send dingtalk alarm to {} failure.", url, e);
-        } finally {
-            if (httpResponse != null) {
-                try {
-                    httpResponse.close();
-                } catch (IOException e) {
-                    log.error(e.getMessage(), e);
-                }
-
-            }
-        }
-    }
 }

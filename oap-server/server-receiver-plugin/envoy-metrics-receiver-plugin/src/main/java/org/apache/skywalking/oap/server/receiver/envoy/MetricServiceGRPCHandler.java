@@ -18,18 +18,24 @@
 
 package org.apache.skywalking.oap.server.receiver.envoy;
 
+import com.google.common.collect.ImmutableMap;
 import io.envoyproxy.envoy.service.metrics.v2.MetricsServiceGrpc;
 import io.envoyproxy.envoy.service.metrics.v3.StreamMetricsMessage;
 import io.envoyproxy.envoy.service.metrics.v3.StreamMetricsResponse;
+import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
 import io.prometheus.client.Metrics;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.skywalking.apm.util.StringUtil;
-import org.apache.skywalking.oap.meter.analyzer.prometheus.PrometheusMetricConverter;
+import org.apache.skywalking.oap.meter.analyzer.v2.MetricConvert;
+import org.apache.skywalking.oap.meter.analyzer.v2.dsl.SampleFamily;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
+import org.apache.skywalking.oap.meter.analyzer.v2.prometheus.PrometheusMetricConverter;
 import org.apache.skywalking.oap.server.core.CoreModule;
 import org.apache.skywalking.oap.server.core.analysis.meter.MeterSystem;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
@@ -47,11 +53,12 @@ import org.apache.skywalking.oap.server.telemetry.api.MetricsTag;
 public class MetricServiceGRPCHandler extends MetricsServiceGrpc.MetricsServiceImplBase {
     private final CounterMetrics counter;
     private final HistogramMetrics histogram;
-    private final List<PrometheusMetricConverter> converters;
+    private final List<MetricConvert> converters;
 
     private final EnvoyMetricReceiverConfig config;
 
-    public MetricServiceGRPCHandler(final ModuleManager moduleManager, final EnvoyMetricReceiverConfig config) throws ModuleStartException {
+    public MetricServiceGRPCHandler(final ModuleManager moduleManager,
+                                    final EnvoyMetricReceiverConfig config) throws ModuleStartException {
         this.config = config;
 
         MetricsCreator metricsCreator = moduleManager.find(TelemetryModule.NAME)
@@ -70,7 +77,7 @@ public class MetricServiceGRPCHandler extends MetricsServiceGrpc.MetricsServiceI
 
         converters = config.rules()
                            .stream()
-                           .map(rule -> new PrometheusMetricConverter(rule, meterSystem))
+                           .map(rule -> new MetricConvert(rule, meterSystem))
                            .collect(Collectors.toList());
     }
 
@@ -89,35 +96,55 @@ public class MetricServiceGRPCHandler extends MetricsServiceGrpc.MetricsServiceI
 
                 if (isFirst) {
                     isFirst = false;
-                    service = config.serviceMetaInfoFactory().fromStruct(message.getIdentifier().getNode().getMetadata());
+                    service = config.serviceMetaInfoFactory()
+                                    .fromStruct(message.getIdentifier().getNode().getMetadata());
                 }
 
                 if (log.isDebugEnabled()) {
                     log.debug("Envoy metrics reported from service[{}]", service);
                 }
 
-                if (service != null && StringUtil.isNotEmpty(service.getServiceName()) && StringUtil.isNotEmpty(service.getServiceInstanceName())) {
+                if (service != null && StringUtil.isNotEmpty(service.getServiceName()) && StringUtil.isNotEmpty(
+                    service.getServiceInstanceName())) {
                     List<Metrics.MetricFamily> list = message.getEnvoyMetricsList();
-
+                    Map<String, List<Metric>> groupingMetrics = new HashMap<>();
                     for (final Metrics.MetricFamily metricFamily : list) {
                         counter.inc();
-
                         try (final HistogramMetrics.Timer ignored = histogram.createTimer()) {
-                            final ProtoMetricFamily2MetricsAdapter adapter = new ProtoMetricFamily2MetricsAdapter(metricFamily);
-                            final Stream<Metric> metrics = adapter.adapt().peek(it -> {
-                                it.getLabels().putIfAbsent("cluster", service.getServiceName());
+                            final ProtoMetricFamily2MetricsAdapter adapter = new ProtoMetricFamily2MetricsAdapter(
+                                metricFamily, config.getClusterManagerMetricsAdapter(), config.getListenerMetricsAdapter());
+                            adapter.adapt().forEach(it -> {
+                                it.getLabels().putIfAbsent("app", service.getServiceName());
                                 it.getLabels().putIfAbsent("instance", service.getServiceInstanceName());
+
+                                List<Metric> metricList = groupingMetrics.computeIfAbsent(
+                                    it.getName(),
+                                    name -> new ArrayList<>()
+                                );
+                                metricList.add(it);
                             });
-                            converters.forEach(converter -> converter.toMeter(metrics));
                         }
                     }
+                    groupingMetrics.forEach(
+                        (name, metrics) -> {
+                            ImmutableMap<String, SampleFamily> sampleFamilies = PrometheusMetricConverter
+                                .convertPromMetricToSampleFamily(metrics.stream());
+                            converters.forEach(converter -> converter.toMeter(sampleFamilies));
+                        }
+                    );
                 }
             }
 
             @Override
             public void onError(Throwable throwable) {
+                Status status = Status.fromThrowable(throwable);
+                if (Status.CANCELLED.getCode() == status.getCode()) {
+                    if (log.isDebugEnabled()) {
+                        log.error("Envoy client cancelled sending metrics", throwable);
+                    }
+                    return;
+                }
                 log.error("Error in receiving metrics from envoy", throwable);
-                responseObserver.onCompleted();
             }
 
             @Override

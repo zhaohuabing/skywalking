@@ -17,10 +17,10 @@
 
 package org.apache.skywalking.oap.server.core.source;
 
+import com.google.gson.JsonObject;
 import lombok.Getter;
 import lombok.Setter;
 import org.apache.skywalking.oap.server.core.analysis.IDManager;
-import org.apache.skywalking.oap.server.core.analysis.NodeType;
 
 @ScopeDeclaration(id = DefaultScopeDefine.ENDPOINT_META, name = "EndpointMeta")
 @ScopeDefaultColumn.VirtualColumnDefinition(fieldName = "entityId", columnName = "entity_id", isID = true, type = String.class)
@@ -31,9 +31,9 @@ public class EndpointMeta extends Source {
     @Getter
     @Setter
     private String serviceName;
-    @Getter
     @Setter
-    private NodeType serviceNodeType;
+    @Getter
+    private boolean isServiceNormal;
     @Getter
     @Setter
     private String endpoint;
@@ -50,6 +50,19 @@ public class EndpointMeta extends Source {
 
     @Override
     public void prepare() {
-        this.serviceId = IDManager.ServiceID.buildId(serviceName, serviceNodeType);
+        this.serviceId = IDManager.ServiceID.buildId(serviceName, isServiceNormal);
+    }
+
+    @Override
+    public String toJson() {
+        final JsonObject obj = new JsonObject();
+        obj.addProperty("scope", scope());
+        obj.addProperty("entityId", getEntityId());
+        obj.addProperty("timeBucket", getTimeBucket());
+        obj.addProperty("serviceId", serviceId);
+        obj.addProperty("serviceName", serviceName);
+        obj.addProperty("serviceNormal", isServiceNormal);
+        obj.addProperty("endpoint", endpoint);
+        return obj.toString();
     }
 }

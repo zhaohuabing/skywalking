@@ -16,7 +16,7 @@ If you need to execute build behind the proxy, edit the *.mvn/jvm.config* and se
 ```
 
 ### Building from GitHub
-1. Prepare git, JDK8+, and Maven 3.6+.
+1. Prepare git, JDK 11, 17, 21, 25 (LTS versions), and Maven 3.6+.
 1. Clone the project.
 
     If you want to build a release from source codes, set a `tag name` by using `git clone -b [tag_name] ...` while cloning.
@@ -33,7 +33,7 @@ If you need to execute build behind the proxy, edit the *.mvn/jvm.config* and se
     git submodule update
     ```
    
-1. Run `./mvnw clean package -DskipTests`
+1. Run `./mvnw clean package -Dmaven.test.skip`
 1. All packages are in `/dist` (.tar.gz for Linux and .zip for Windows).
 
 ### Building from Apache source code release
@@ -41,23 +41,13 @@ If you need to execute build behind the proxy, edit the *.mvn/jvm.config* and se
 
 For each official Apache release, there is a complete and independent source code tar, which includes all source codes. You could download it from [SkyWalking Apache download page](http://skywalking.apache.org/downloads/). There is no requirement related to git when compiling this. Just follow these steps.
 
-1. Prepare JDK8+ and Maven 3.6+.
-1. Run `./mvnw clean package -DskipTests`.
+1. Prepare JDK11+ and Maven 3.6+.
+1. Run `./mvnw clean package -Dmaven.test.skip`.
 1. All packages are in `/dist`.(.tar.gz for Linux and .zip for Windows).
 
 ### Advanced compiling
 SkyWalking is a complex maven project that has many modules. Therefore, the time to compile may be a bit longer than usual.
 If you just want to recompile part of the project, you have the following options:
-- Compile agent and package
->  ./mvnw package -Pagent,dist
-
-or
-
-> make build.agent
-
-If you intend to compile a single plugin, such as one in the dev stage, you could
->  cd plugin_module_dir & mvn clean package
-
 - Compile backend and package
 >  ./mvnw package -Pbackend,dist
 
@@ -65,21 +55,20 @@ or
 
 > make build.backend
 
-- Compile UI and package
->  ./mvnw package -Pui,dist
+If you intend to compile a single plugin, such as one in the dev stage, you could
+>  cd plugin_module_dir & mvn clean package
 
-or
-
-> make build.ui
-
+The web UI is no longer built from this repository — see
+[apache/skywalking-horizon-ui](https://github.com/apache/skywalking-horizon-ui)
+for the standalone UI build.
 
 ### Building docker images
-You can build docker images of `backend` and `ui` with `Makefile` located in root folder.
+You can build the OAP docker image with `Makefile` located in root folder.
 
 Refer to [Build docker image](../../../docker) for more details.
 
 ## Setting up your IntelliJ IDEA
-**NOTE**: If you clone the codes from GitHub, please make sure that you have finished steps 1 to 3 in section **[Build from GitHub](#build-from-github)**. If you download the source codes from the official website of SkyWalking, please make sure that you have followed the steps in section **[Build from Apache source code release](#build-from-apache-source-code-release)**.
+**NOTE**: If you clone the codes from GitHub, please make sure that you have finished steps 1 to 3 in section **[Build from GitHub](#building-from-github)**. If you download the source codes from the official website of SkyWalking, please make sure that you have followed the steps in section **[Build from Apache source code release](#building-from-apache-source-code-release)**.
 
 1. Import the project as a maven project.
 1. Run `./mvnw compile -Dmaven.test.skip=true` to compile project and generate source codes. The reason is that we use gRPC and protobuf.
@@ -91,4 +80,5 @@ Refer to [Build docker image](../../../docker) for more details.
     * `grpc-java` and `java` folders in **oap-server/exporter/target/generated-sources/protobuf**
     * `grpc-java` and `java` folders in **oap-server/server-configuration/grpc-configuration-sync/target/generated-sources/protobuf**
     * `grpc-java` and `java` folders in **oap-server/server-alarm-plugin/target/generated-sources/protobuf**
+    * `grpc-java` and `java` folders in **oap-server/server-fetcher-plugin/fetcher-proto/target/generated-sources/protobuf**
     * `antlr4` folder in **oap-server/oal-grammar/target/generated-sources**

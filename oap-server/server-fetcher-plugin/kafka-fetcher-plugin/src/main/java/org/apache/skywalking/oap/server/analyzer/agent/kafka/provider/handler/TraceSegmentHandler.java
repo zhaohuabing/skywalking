@@ -24,31 +24,29 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.utils.Bytes;
 import org.apache.skywalking.apm.network.language.agent.v3.SegmentObject;
 import org.apache.skywalking.oap.server.analyzer.agent.kafka.module.KafkaFetcherConfig;
-import org.apache.skywalking.oap.server.analyzer.module.AnalyzerModule;
-import org.apache.skywalking.oap.server.analyzer.provider.trace.parser.ISegmentParserService;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
 import org.apache.skywalking.oap.server.telemetry.TelemetryModule;
 import org.apache.skywalking.oap.server.telemetry.api.CounterMetrics;
 import org.apache.skywalking.oap.server.telemetry.api.HistogramMetrics;
 import org.apache.skywalking.oap.server.telemetry.api.MetricsCreator;
 import org.apache.skywalking.oap.server.telemetry.api.MetricsTag;
+import org.apache.skywalking.oap.trace.analyzer.v2.module.TraceAnalyzerModule;
+import org.apache.skywalking.oap.trace.analyzer.v2.provider.nativetrace.ISegmentParserService;
 
 /**
  * A handler deserializes the message of the trace segment data and pushes it to downstream.
  */
 @Slf4j
-public class TraceSegmentHandler implements KafkaHandler {
+public class TraceSegmentHandler extends AbstractKafkaHandler {
 
-    private final KafkaFetcherConfig config;
     private final ISegmentParserService segmentParserService;
 
-    private HistogramMetrics histogram;
-    private CounterMetrics errorCounter;
+    private final HistogramMetrics histogram;
+    private final CounterMetrics errorCounter;
 
-    public TraceSegmentHandler(ModuleManager moduleManager,
-                               KafkaFetcherConfig config) {
-        this.config = config;
-        this.segmentParserService = moduleManager.find(AnalyzerModule.NAME)
+    public TraceSegmentHandler(ModuleManager moduleManager, KafkaFetcherConfig config) {
+        super(moduleManager, config);
+        this.segmentParserService = moduleManager.find(TraceAnalyzerModule.NAME)
                                                  .provider()
                                                  .getService(ISegmentParserService.class);
 
@@ -59,19 +57,19 @@ public class TraceSegmentHandler implements KafkaHandler {
             "trace_in_latency",
             "The process latency of trace data",
             new MetricsTag.Keys("protocol"),
-            new MetricsTag.Values("kafka-fetcher")
+            new MetricsTag.Values("kafka")
         );
         errorCounter = metricsCreator.createCounter(
             "trace_analysis_error_count",
             "The error number of trace analysis",
             new MetricsTag.Keys("protocol"),
-            new MetricsTag.Values("kafka-fetcher")
+            new MetricsTag.Values("kafka")
         );
     }
 
     @Override
     public void handle(final ConsumerRecord<String, Bytes> record) {
-        try {
+        try (HistogramMetrics.Timer ignored = histogram.createTimer()) {
             SegmentObject segment = SegmentObject.parseFrom(record.value().get());
             if (log.isDebugEnabled()) {
                 log.debug(
@@ -80,28 +78,15 @@ public class TraceSegmentHandler implements KafkaHandler {
                     segment.getServiceInstance()
                 );
             }
-
-            HistogramMetrics.Timer timer = histogram.createTimer();
-            try {
-                segmentParserService.send(segment);
-            } catch (Exception e) {
-                errorCounter.inc();
-                log.error(e.getMessage(), e);
-            } finally {
-                timer.finish();
-            }
+            segmentParserService.send(segment);
         } catch (InvalidProtocolBufferException e) {
+            errorCounter.inc();
             log.error("handle record failed", e);
         }
     }
 
     @Override
-    public String getTopic() {
-        return config.getMm2SourceAlias() + config.getMm2SourceSeparator() + config.getTopicNameOfTracingSegments();
-    }
-
-    @Override
-    public String getConsumePartitions() {
-        return config.getConsumePartitions();
+    protected String getPlainTopic() {
+        return config.getTopicNameOfTracingSegments();
     }
 }

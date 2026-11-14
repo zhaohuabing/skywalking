@@ -20,14 +20,17 @@ package org.apache.skywalking.oap.server.health.checker.provider;
 
 import com.google.common.util.concurrent.AtomicDouble;
 import io.vavr.collection.Stream;
+
+import java.util.Arrays;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import org.apache.skywalking.oap.server.library.util.VirtualThreads;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.skywalking.oap.server.core.CoreModule;
+import org.apache.skywalking.oap.server.core.server.HTTPHandlerRegister;
 import org.apache.skywalking.oap.server.health.checker.module.HealthCheckerModule;
-import org.apache.skywalking.oap.server.library.module.ModuleConfig;
 import org.apache.skywalking.oap.server.library.module.ModuleDefine;
 import org.apache.skywalking.oap.server.library.module.ModuleProvider;
 import org.apache.skywalking.oap.server.library.module.ModuleServiceHolder;
@@ -37,6 +40,8 @@ import org.apache.skywalking.oap.server.telemetry.TelemetryModule;
 import org.apache.skywalking.oap.server.telemetry.api.MetricsCollector;
 import org.apache.skywalking.oap.server.telemetry.api.MetricsCreator;
 
+import com.linecorp.armeria.common.HttpMethod;
+
 /**
  * HealthCheckerProvider fetches health check metrics from telemetry module, then calculates health score and generates
  * details explains the score. External service or users can query health status by HealthCheckerService.
@@ -45,10 +50,11 @@ import org.apache.skywalking.oap.server.telemetry.api.MetricsCreator;
 public class HealthCheckerProvider extends ModuleProvider {
     private final AtomicDouble score = new AtomicDouble();
     private final AtomicReference<String> details = new AtomicReference<>();
-    private final HealthCheckerConfig config = new HealthCheckerConfig();
+    private HealthCheckerConfig config;
     private MetricsCollector collector;
     private MetricsCreator metricsCreator;
     private ScheduledExecutorService ses;
+    private HealthQueryService healthQueryService;
 
     @Override public String name() {
         return "default";
@@ -58,35 +64,64 @@ public class HealthCheckerProvider extends ModuleProvider {
         return HealthCheckerModule.class;
     }
 
-    @Override public ModuleConfig createConfigBeanIfAbsent() {
-        return config;
+    @Override
+    public ConfigCreator newConfigCreator() {
+        return new ConfigCreator<HealthCheckerConfig>() {
+            @Override
+            public Class type() {
+                return HealthCheckerConfig.class;
+            }
+
+            @Override
+            public void onInitialized(final HealthCheckerConfig initialized) {
+                config = initialized;
+            }
+        };
     }
 
     @Override public void prepare() throws ServiceNotProvidedException, ModuleStartException {
         score.set(-1);
-        ses = Executors.newSingleThreadScheduledExecutor();
-        this.registerServiceImplementation(HealthQueryService.class, new HealthQueryService(score, details));
+        ses = VirtualThreads.createScheduledExecutor(
+            "HealthChecker",
+            () -> Executors.newSingleThreadScheduledExecutor(r -> {
+                final Thread t = new Thread(r, "HealthChecker");
+                t.setDaemon(true);
+                return t;
+            }));
+        healthQueryService = new HealthQueryService(score, details);
+        this.registerServiceImplementation(HealthQueryService.class, healthQueryService);
     }
 
     @Override public void start() throws ServiceNotProvidedException, ModuleStartException {
         ModuleServiceHolder telemetry = getManager().find(TelemetryModule.NAME).provider();
         metricsCreator = telemetry.getService(MetricsCreator.class);
         collector = telemetry.getService(MetricsCollector.class);
+
+        final var service = getManager().find(CoreModule.NAME)
+                                        .provider()
+                                        .getService(HTTPHandlerRegister.class);
+        service.addHandler(new HealthCheckerHttpService(healthQueryService), Arrays.asList(HttpMethod.HEAD, HttpMethod.GET));
     }
 
     @Override public void notifyAfterCompleted() throws ServiceNotProvidedException, ModuleStartException {
         ses.scheduleAtFixedRate(() -> {
             StringBuilder unhealthyModules = new StringBuilder();
-            score.set(Stream.ofAll(collector.collect())
-                    .flatMap(metricFamily -> metricFamily.samples)
-                    .filter(sample -> metricsCreator.isHealthCheckerMetrics(sample.name))
-                    .peek(sample -> {
-                        if (sample.value > 0.0) {
-                            unhealthyModules.append(metricsCreator.extractModuleName(sample.name)).append(",");
-                        }
-                    })
-                    .map(sample -> sample.value)
-                    .collect(Collectors.summingDouble(Double::doubleValue)));
+            AtomicDouble unhealthyModule = new AtomicDouble(0);
+            Stream.ofAll(collector.collect())
+                                        .flatMap(metricFamily -> metricFamily.samples)
+                                        .filter(sample -> metricsCreator.isHealthCheckerMetrics(sample.name))
+                                        .forEach(sample -> {
+                                            if (sample.value < 1) {
+                                                unhealthyModules.append(metricsCreator.extractModuleName(sample.name)).append(",");
+                                                unhealthyModule.updateAndGet(v -> v + 1);
+                                            }
+                                        });
+
+            if (unhealthyModule.get() > 0) {
+                score.set(unhealthyModule.get());
+            } else {
+                score.set(0);
+            }
             details.set(unhealthyModules.toString());
             },
             2, config.getCheckIntervalSeconds(), TimeUnit.SECONDS);

@@ -21,7 +21,6 @@ package org.apache.skywalking.oap.server.analyzer.agent.kafka.provider.handler;
 import com.google.gson.JsonObject;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.utils.Bytes;
@@ -31,11 +30,12 @@ import org.apache.skywalking.oap.server.analyzer.agent.kafka.module.KafkaFetcher
 import org.apache.skywalking.oap.server.core.CoreModule;
 import org.apache.skywalking.oap.server.core.analysis.DownSampling;
 import org.apache.skywalking.oap.server.core.analysis.IDManager;
-import org.apache.skywalking.oap.server.core.analysis.NodeType;
+import org.apache.skywalking.oap.server.core.analysis.Layer;
 import org.apache.skywalking.oap.server.core.analysis.TimeBucket;
 import org.apache.skywalking.oap.server.core.analysis.manual.instance.InstanceTraffic;
 import org.apache.skywalking.oap.server.core.config.NamingControl;
 import org.apache.skywalking.oap.server.core.source.ServiceInstanceUpdate;
+import org.apache.skywalking.oap.server.core.source.ServiceMeta;
 import org.apache.skywalking.oap.server.core.source.SourceReceiver;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
 
@@ -43,14 +43,13 @@ import org.apache.skywalking.oap.server.library.module.ModuleManager;
  * A handler deserializes the message of Service Management and pushes it to downstream.
  */
 @Slf4j
-public class ServiceManagementHandler implements KafkaHandler {
+public class ServiceManagementHandler extends AbstractKafkaHandler {
 
     private final SourceReceiver sourceReceiver;
     private final NamingControl namingLengthControl;
 
-    private final KafkaFetcherConfig config;
-
     public ServiceManagementHandler(ModuleManager moduleManager, KafkaFetcherConfig config) {
+        super(moduleManager, config);
         this.sourceReceiver = moduleManager.find(CoreModule.NAME).provider().getService(SourceReceiver.class);
         this.namingLengthControl = moduleManager.find(CoreModule.NAME)
                                                 .provider()
@@ -71,19 +70,15 @@ public class ServiceManagementHandler implements KafkaHandler {
         }
     }
 
-    private final void serviceReportProperties(InstanceProperties request) {
+    private void serviceReportProperties(InstanceProperties request) {
         ServiceInstanceUpdate serviceInstanceUpdate = new ServiceInstanceUpdate();
         final String serviceName = namingLengthControl.formatServiceName(request.getService());
         final String instanceName = namingLengthControl.formatInstanceName(request.getServiceInstance());
-        serviceInstanceUpdate.setServiceId(IDManager.ServiceID.buildId(serviceName, NodeType.Normal));
+        serviceInstanceUpdate.setServiceId(IDManager.ServiceID.buildId(serviceName, true));
         serviceInstanceUpdate.setName(instanceName);
 
         if (log.isDebugEnabled()) {
-            log.debug(
-                "Service[{}] instance[{}] registered.",
-                serviceName,
-                instanceName
-            );
+            log.debug("Service[{}] instance[{}] registered.", serviceName, instanceName);
         }
 
         JsonObject properties = new JsonObject();
@@ -95,40 +90,37 @@ public class ServiceManagementHandler implements KafkaHandler {
                 properties.addProperty(prop.getKey(), prop.getValue());
             }
         });
-        properties.addProperty(InstanceTraffic.PropertyUtil.IPV4S, ipv4List.stream().collect(Collectors.joining(",")));
+        properties.addProperty(InstanceTraffic.PropertyUtil.IPV4S, String.join(",", ipv4List));
         serviceInstanceUpdate.setProperties(properties);
         serviceInstanceUpdate.setTimeBucket(
             TimeBucket.getTimeBucket(System.currentTimeMillis(), DownSampling.Minute));
         sourceReceiver.receive(serviceInstanceUpdate);
     }
 
-    private final void keepAlive(InstancePingPkg request) {
+    private void keepAlive(InstancePingPkg request) {
         final long timeBucket = TimeBucket.getTimeBucket(System.currentTimeMillis(), DownSampling.Minute);
         final String serviceName = namingLengthControl.formatServiceName(request.getService());
         final String instanceName = namingLengthControl.formatInstanceName(request.getServiceInstance());
 
         if (log.isDebugEnabled()) {
-            log.debug(
-                "A ping of Service[{}] instance[{}].",
-                serviceName,
-                instanceName
-            );
+            log.debug("A ping of Service[{}] instance[{}].", serviceName, instanceName);
         }
 
         ServiceInstanceUpdate serviceInstanceUpdate = new ServiceInstanceUpdate();
-        serviceInstanceUpdate.setServiceId(IDManager.ServiceID.buildId(serviceName, NodeType.Normal));
+        serviceInstanceUpdate.setServiceId(IDManager.ServiceID.buildId(serviceName, true));
         serviceInstanceUpdate.setName(instanceName);
         serviceInstanceUpdate.setTimeBucket(timeBucket);
         sourceReceiver.receive(serviceInstanceUpdate);
+
+        ServiceMeta serviceMeta = new ServiceMeta();
+        serviceMeta.setName(serviceName);
+        serviceMeta.setTimeBucket(timeBucket);
+        serviceMeta.setLayer(Layer.GENERAL);
+        sourceReceiver.receive(serviceMeta);
     }
 
     @Override
-    public String getTopic() {
-        return config.getMm2SourceAlias() + config.getMm2SourceSeparator() + config.getTopicNameOfManagements();
-    }
-
-    @Override
-    public String getConsumePartitions() {
-        return config.getConsumePartitions();
+    protected String getPlainTopic() {
+        return config.getTopicNameOfManagements();
     }
 }

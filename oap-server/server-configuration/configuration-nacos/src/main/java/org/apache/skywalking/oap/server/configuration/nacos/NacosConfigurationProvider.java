@@ -20,25 +20,18 @@ package org.apache.skywalking.oap.server.configuration.nacos;
 
 import com.alibaba.nacos.api.exception.NacosException;
 import com.google.common.base.Strings;
-import org.apache.skywalking.apm.util.StringUtil;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.skywalking.oap.server.configuration.api.AbstractConfigurationProvider;
 import org.apache.skywalking.oap.server.configuration.api.ConfigWatcherRegister;
-import org.apache.skywalking.oap.server.library.module.ModuleConfig;
 import org.apache.skywalking.oap.server.library.module.ModuleStartException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
 
 /**
  * Get configuration from Nacos.
  */
+@Slf4j
 public class NacosConfigurationProvider extends AbstractConfigurationProvider {
-    private static final Logger LOGGER = LoggerFactory.getLogger(NacosConfigurationProvider.class);
-
     private NacosServerSettings settings;
-
-    public NacosConfigurationProvider() {
-        settings = new NacosServerSettings();
-    }
 
     @Override
     public String name() {
@@ -46,13 +39,23 @@ public class NacosConfigurationProvider extends AbstractConfigurationProvider {
     }
 
     @Override
-    public ModuleConfig createConfigBeanIfAbsent() {
-        return settings;
+    public ConfigCreator newConfigCreator() {
+        return new ConfigCreator<NacosServerSettings>() {
+            @Override
+            public Class type() {
+                return NacosServerSettings.class;
+            }
+
+            @Override
+            public void onInitialized(final NacosServerSettings initialized) {
+                settings = initialized;
+            }
+        };
     }
 
     @Override
     protected ConfigWatcherRegister initConfigReader() throws ModuleStartException {
-        LOGGER.info("settings: {}", settings);
+        log.info("settings: {}", settings);
         if (Strings.isNullOrEmpty(settings.getServerAddr())) {
             throw new ModuleStartException("Nacos serverAddr cannot be null or empty.");
         }

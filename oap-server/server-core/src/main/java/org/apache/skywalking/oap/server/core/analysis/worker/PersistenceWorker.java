@@ -18,7 +18,6 @@
 
 package org.apache.skywalking.oap.server.core.analysis.worker;
 
-import java.util.Collection;
 import java.util.List;
 import lombok.AccessLevel;
 import lombok.Getter;
@@ -30,7 +29,7 @@ import org.apache.skywalking.oap.server.library.client.request.PrepareRequest;
 import org.apache.skywalking.oap.server.library.module.ModuleDefineHolder;
 
 /**
- * PersistenceWorker take the responsibility to pushing data to the final storage. The target storage is based on the
+ * PersistenceWorker is responsible for pushing data to the final storage. The target storage is based on the
  * activate storage implementation. This worker controls the persistence flow.
  *
  * @param <INPUT> The type of worker input. All inputs will be merged and saved.
@@ -54,23 +53,13 @@ public abstract class PersistenceWorker<INPUT extends StorageData> extends Abstr
 
     /**
      * The persistence process is driven by the {@link org.apache.skywalking.oap.server.core.storage.PersistenceTimer}.
-     * This is a notification method for the worker when every round finished.
-     *
-     * @param tookTime The time costs in this round.
+     * This is a notification method for the worker once every round is finished.
      */
-    public abstract void endOfRound(long tookTime);
+    public abstract void endOfRound();
 
     /**
      * Prepare the batch persistence, transfer all prepared data to the executable data format based on the storage
      * implementations.
-     *
-     * @param lastCollection  the source of transformation, they are in memory object format.
-     * @param prepareRequests data in the formats for the final persistence operations.
      */
-    public abstract void prepareBatch(Collection<INPUT> lastCollection, List<PrepareRequest> prepareRequests);
-
-    public void buildBatchRequests(List<PrepareRequest> prepareRequests) {
-        final List<INPUT> dataList = getCache().read();
-        prepareBatch(dataList, prepareRequests);
-    }
+    public abstract List<PrepareRequest> buildBatchRequests();
 }

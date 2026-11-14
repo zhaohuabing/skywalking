@@ -19,27 +19,26 @@
 package org.apache.skywalking.oap.server.receiver.zabbix.provider;
 
 import com.google.common.base.Splitter;
-import org.apache.skywalking.apm.util.StringUtil;
+import java.util.Collections;
+import java.util.List;
 import org.apache.skywalking.oap.server.core.CoreModule;
 import org.apache.skywalking.oap.server.core.analysis.meter.MeterSystem;
-import org.apache.skywalking.oap.server.library.module.ModuleConfig;
 import org.apache.skywalking.oap.server.library.module.ModuleDefine;
 import org.apache.skywalking.oap.server.library.module.ModuleProvider;
 import org.apache.skywalking.oap.server.library.module.ModuleStartException;
 import org.apache.skywalking.oap.server.library.module.ServiceNotProvidedException;
 import org.apache.skywalking.oap.server.library.util.CollectionUtils;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
 import org.apache.skywalking.oap.server.receiver.zabbix.module.ZabbixReceiverModule;
 import org.apache.skywalking.oap.server.receiver.zabbix.provider.config.ZabbixConfig;
 import org.apache.skywalking.oap.server.receiver.zabbix.provider.config.ZabbixConfigs;
 import org.apache.skywalking.oap.server.receiver.zabbix.provider.protocol.ZabbixServer;
 
-import java.util.Collections;
-import java.util.List;
-
 public class ZabbixReceiverProvider extends ModuleProvider {
     private ZabbixModuleConfig moduleConfig;
     private List<ZabbixConfig> configs;
     private ZabbixMetrics zabbixMetrics;
+    private ZabbixServer zabbixServer;
 
     public ZabbixReceiverProvider() {
         this.moduleConfig = new ZabbixModuleConfig();
@@ -56,8 +55,18 @@ public class ZabbixReceiverProvider extends ModuleProvider {
     }
 
     @Override
-    public ModuleConfig createConfigBeanIfAbsent() {
-        return moduleConfig;
+    public ConfigCreator newConfigCreator() {
+        return new ConfigCreator<ZabbixModuleConfig>() {
+            @Override
+            public Class type() {
+                return ZabbixModuleConfig.class;
+            }
+
+            @Override
+            public void onInitialized(final ZabbixModuleConfig initialized) {
+                moduleConfig = initialized;
+            }
+        };
     }
 
     @Override
@@ -72,18 +81,24 @@ public class ZabbixReceiverProvider extends ModuleProvider {
             // Init metrics
             zabbixMetrics = new ZabbixMetrics(configs, getManager().find(CoreModule.NAME).provider().getService(MeterSystem.class));
 
-            // Bind receiver server
-            ZabbixServer zabbixServer = new ZabbixServer(moduleConfig, zabbixMetrics);
-            try {
-                zabbixServer.start();
-            } catch (Exception e) {
-                throw new ModuleStartException(e.getMessage(), e);
-            }
+            zabbixServer = new ZabbixServer(moduleConfig, zabbixMetrics);
         }
     }
 
     @Override
     public void notifyAfterCompleted() throws ServiceNotProvidedException, ModuleStartException {
+    }
+
+    @Override
+    public void notifyBootCompleted() throws ServiceNotProvidedException, ModuleStartException {
+        if (zabbixServer == null) {
+            return;
+        }
+        try {
+            zabbixServer.start();
+        } catch (Exception e) {
+            throw new ModuleStartException(e.getMessage(), e);
+        }
     }
 
     @Override

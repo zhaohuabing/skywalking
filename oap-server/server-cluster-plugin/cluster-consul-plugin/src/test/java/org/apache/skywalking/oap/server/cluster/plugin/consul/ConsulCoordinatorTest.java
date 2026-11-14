@@ -18,28 +18,29 @@
 
 package org.apache.skywalking.oap.server.cluster.plugin.consul;
 
-import com.orbitz.consul.AgentClient;
-import com.orbitz.consul.Consul;
-import com.orbitz.consul.HealthClient;
-import com.orbitz.consul.model.ConsulResponse;
-import com.orbitz.consul.model.agent.Registration;
-import com.orbitz.consul.model.health.Service;
-import com.orbitz.consul.model.health.ServiceHealth;
-import java.util.Collections;
-import java.util.LinkedList;
-import java.util.List;
+import org.kiwiproject.consul.AgentClient;
+import org.kiwiproject.consul.Consul;
+import org.kiwiproject.consul.HealthClient;
+import org.kiwiproject.consul.model.ConsulResponse;
+import org.kiwiproject.consul.model.agent.Registration;
+import org.kiwiproject.consul.model.health.Service;
+import org.kiwiproject.consul.model.health.ServiceHealth;
 import org.apache.skywalking.oap.server.core.cluster.RemoteInstance;
 import org.apache.skywalking.oap.server.core.remote.client.Address;
 import org.apache.skywalking.oap.server.library.module.ModuleDefineHolder;
 import org.apache.skywalking.oap.server.telemetry.api.HealthCheckMetrics;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.powermock.reflect.Whitebox;
+import org.apache.skywalking.oap.server.testing.util.ReflectUtil;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import java.util.Collections;
+import java.util.LinkedList;
+import java.util.List;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
@@ -65,12 +66,12 @@ public class ConsulCoordinatorTest {
 
     private static final String SERVICE_NAME = "my-service";
 
-    @Before
+    @BeforeEach
     public void setUp() {
         consulConfig.setServiceName(SERVICE_NAME);
         ModuleDefineHolder manager = mock(ModuleDefineHolder.class);
         coordinator = new ConsulCoordinator(manager, consulConfig, consul);
-        Whitebox.setInternalState(coordinator, "healthChecker", healthChecker);
+        ReflectUtil.setInternalState(coordinator, "healthChecker", healthChecker);
         consulResponse = mock(ConsulResponse.class);
 
         HealthClient healthClient = mock(HealthClient.class);

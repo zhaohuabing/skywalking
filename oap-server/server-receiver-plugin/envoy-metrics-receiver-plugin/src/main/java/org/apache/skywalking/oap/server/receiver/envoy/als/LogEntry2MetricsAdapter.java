@@ -28,24 +28,30 @@ import io.envoyproxy.envoy.data.accesslog.v3.TLSProperties;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import lombok.RequiredArgsConstructor;
 import org.apache.skywalking.apm.network.common.v3.DetectPoint;
+import org.apache.skywalking.apm.network.common.v3.KeyStringValuePair;
+import org.apache.skywalking.apm.network.servicemesh.v3.HTTPServiceMeshMetric;
 import org.apache.skywalking.apm.network.servicemesh.v3.Protocol;
-import org.apache.skywalking.apm.network.servicemesh.v3.ServiceMeshMetric;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static org.apache.skywalking.oap.server.core.Const.TLS_MODE.M_TLS;
+import static org.apache.skywalking.oap.server.core.Const.TLS_MODE.NON_TLS;
+import static org.apache.skywalking.oap.server.core.Const.TLS_MODE.TLS;
 
 /**
- * Adapt {@link HTTPAccessLogEntry} objects to {@link ServiceMeshMetric} builders.
+ * Adapt {@link HTTPAccessLogEntry} objects to {@link HTTPServiceMeshMetric} builders.
  */
 @RequiredArgsConstructor
 public class LogEntry2MetricsAdapter {
+    /**
+     * An internal latency the access log cannot measure. The internal latency metrics in {@code mesh.oal} leave it
+     * out with {@code filter(... >= 0)}.
+     */
+    public static final long UNKNOWN_INTERNAL_LATENCY = -1;
 
-    public static final String NON_TLS = "NONE";
-
-    public static final String M_TLS = "mTLS";
-
-    public static final String TLS = "TLS";
+    private static final String VIA_UPSTREAM = "via_upstream";
 
     /**
      * The access log entry that is to be adapted into metrics builders.
@@ -57,11 +63,11 @@ public class LogEntry2MetricsAdapter {
     protected final ServiceMetaInfo targetService;
 
     /**
-     * Adapt the {@code entry} into a downstream metrics {@link ServiceMeshMetric.Builder}.
+     * Adapt the {@code entry} into a downstream metrics {@link HTTPServiceMeshMetric.Builder}.
      *
-     * @return the {@link ServiceMeshMetric.Builder} adapted from the given entry.
+     * @return the {@link HTTPServiceMeshMetric.Builder} adapted from the given entry.
      */
-    public ServiceMeshMetric.Builder adaptToDownstreamMetrics() {
+    public HTTPServiceMeshMetric.Builder adaptToDownstreamMetrics() {
         final AccessLogCommon properties = entry.getCommonProperties();
         final long startTime = formatAsLong(properties.getStartTime());
         final long duration = formatAsLong(properties.getTimeToLastDownstreamTxByte());
@@ -74,41 +80,67 @@ public class LogEntry2MetricsAdapter {
     }
 
     /**
-     * Adapt the {@code entry} into a upstream metrics {@link ServiceMeshMetric.Builder}.
+     * Adapt the {@code entry} into an upstream metrics {@link HTTPServiceMeshMetric.Builder}.
      *
-     * @return the {@link ServiceMeshMetric.Builder} adapted from the given entry.
+     * @return the {@link HTTPServiceMeshMetric.Builder} adapted from the given entry.
      */
-    public ServiceMeshMetric.Builder adaptToUpstreamMetrics() {
+    public HTTPServiceMeshMetric.Builder adaptToUpstreamMetrics() {
         final AccessLogCommon properties = entry.getCommonProperties();
         final long startTime = formatAsLong(properties.getStartTime());
         final long outboundStartTime = startTime + formatAsLong(properties.getTimeToFirstUpstreamTxByte());
         final long outboundEndTime = startTime + formatAsLong(properties.getTimeToLastUpstreamRxByte());
 
-        return adaptCommonPart()
+        final HTTPServiceMeshMetric.Builder builder = adaptCommonPart();
+        // For client side call, status needs to be overridden because 4xx http status codes
+        // are considered as errors too.
+        final boolean status = builder.getResponseCode() < 400;
+
+        return builder
             .setStartTime(outboundStartTime)
             .setEndTime(outboundEndTime)
             .setLatency((int) Math.max(1L, outboundEndTime - outboundStartTime))
+            .setStatus(status)
             .setDetectPoint(DetectPoint.client);
     }
 
-    protected ServiceMeshMetric.Builder adaptCommonPart() {
+    public HTTPServiceMeshMetric.Builder adaptCommonPart() {
         final AccessLogCommon properties = entry.getCommonProperties();
         final String endpoint = endpoint();
         int responseCode = entry.getResponse().getResponseCode().getValue();
         responseCode = responseCode > 0 ? responseCode : 200;
-        final boolean status = responseCode >= 200 && responseCode < 400;
+        final boolean status = responseCode < 500;
         final Protocol protocol = requestProtocol(entry.getRequest());
         final String tlsMode = parseTLS(properties.getTlsProperties());
         final String internalErrorCode = parseInternalErrorCode(properties.getResponseFlags());
+        // The upstream timings count from the start of the downstream request, so after a retry or a hedged
+        // attempt the first upstream byte can include the earlier attempts and the backoff between them.
+        final long internalRequestLatencyNanos =
+            properties.hasTimeToFirstUpstreamTxByte() && properties.getUpstreamRequestAttemptCount() <= 1
+                ? toNanos(properties.getTimeToFirstUpstreamTxByte())
+                : UNKNOWN_INTERNAL_LATENCY;
+        // Envoy leaves out a timing that never happened, and an absent Duration reads as zero. Its own replies, such
+        // as the 504 of a timeout during a retry backoff, can carry an earlier attempt's upstream timing, so only a
+        // response whose details say it came via the upstream is measured. A later reset or timeout replaces those
+        // details, so such a response is left out too. An Envoy that reports no details leaves them empty.
+        final String responseCodeDetails = entry.getResponse().getResponseCodeDetails();
+        final long internalResponseLatencyNanos =
+            (responseCodeDetails.isEmpty() || VIA_UPSTREAM.equals(responseCodeDetails))
+                && properties.hasTimeToFirstUpstreamRxByte() && properties.hasTimeToFirstDownstreamTxByte()
+                ? toNanos(properties.getTimeToFirstDownstreamTxByte())
+                    - toNanos(properties.getTimeToFirstUpstreamRxByte())
+                : UNKNOWN_INTERNAL_LATENCY;
 
-        final ServiceMeshMetric.Builder builder =
-            ServiceMeshMetric.newBuilder()
-                             .setEndpoint(endpoint)
-                             .setResponseCode(Math.toIntExact(responseCode))
-                             .setStatus(status)
-                             .setProtocol(protocol)
-                             .setTlsMode(tlsMode)
-                             .setInternalErrorCode(internalErrorCode);
+        final HTTPServiceMeshMetric.Builder builder =
+            HTTPServiceMeshMetric
+                .newBuilder()
+                .setEndpoint(endpoint)
+                .setResponseCode(Math.toIntExact(responseCode))
+                .setStatus(status)
+                .setProtocol(protocol)
+                .setTlsMode(tlsMode)
+                .setInternalErrorCode(internalErrorCode)
+                .setInternalRequestLatencyNanos(internalRequestLatencyNanos)
+                .setInternalResponseLatencyNanos(internalResponseLatencyNanos);
 
         Optional.ofNullable(sourceService)
                 .map(ServiceMetaInfo::getServiceName)
@@ -123,6 +155,26 @@ public class LogEntry2MetricsAdapter {
                 .map(ServiceMetaInfo::getServiceInstanceName)
                 .ifPresent(builder::setDestServiceInstance);
 
+        Optional
+            .ofNullable(sourceService)
+            .map(ServiceMetaInfo::getTags)
+            .ifPresent(tags -> {
+                tags.forEach(p -> {
+                    builder.addSourceInstanceProperties(
+                        KeyStringValuePair.newBuilder().setKey(p.getKey()).setValue(p.getValue()));
+                });
+            });
+
+        Optional
+            .ofNullable(targetService)
+            .map(ServiceMetaInfo::getTags)
+            .ifPresent(tags -> {
+                tags.forEach(p -> {
+                    builder.addDestInstanceProperties(
+                        KeyStringValuePair.newBuilder().setKey(p.getKey()).setValue(p.getValue()));
+                });
+            });
+
         return builder;
     }
 
@@ -135,15 +187,19 @@ public class LogEntry2MetricsAdapter {
         return method + ":" + request.getPath();
     }
 
-    protected static long formatAsLong(final Timestamp timestamp) {
+    public static long formatAsLong(final Timestamp timestamp) {
         return Instant.ofEpochSecond(timestamp.getSeconds(), timestamp.getNanos()).toEpochMilli();
     }
 
-    protected static long formatAsLong(final Duration duration) {
+    public static long formatAsLong(final Duration duration) {
         return Instant.ofEpochSecond(duration.getSeconds(), duration.getNanos()).toEpochMilli();
     }
 
-    protected static Protocol requestProtocol(final HTTPRequestProperties request) {
+    public static long toNanos(final Duration duration) {
+        return TimeUnit.SECONDS.toNanos(duration.getSeconds()) + duration.getNanos();
+    }
+
+    public static Protocol requestProtocol(final HTTPRequestProperties request) {
         if (request == null) {
             return Protocol.HTTP;
         }
@@ -154,7 +210,7 @@ public class LogEntry2MetricsAdapter {
         return Protocol.gRPC;
     }
 
-    protected static String parseTLS(final TLSProperties properties) {
+    public static String parseTLS(final TLSProperties properties) {
         if (properties == null) {
             return NON_TLS;
         }
@@ -175,7 +231,7 @@ public class LogEntry2MetricsAdapter {
      * @param responseFlags in the ALS v2
      * @return empty string if no internal error code, or literal string representing the code.
      */
-    protected static String parseInternalErrorCode(final ResponseFlags responseFlags) {
+    public static String parseInternalErrorCode(final ResponseFlags responseFlags) {
         if (responseFlags != null) {
             if (responseFlags.getFailedLocalHealthcheck()) {
                 return "failed_local_healthcheck";

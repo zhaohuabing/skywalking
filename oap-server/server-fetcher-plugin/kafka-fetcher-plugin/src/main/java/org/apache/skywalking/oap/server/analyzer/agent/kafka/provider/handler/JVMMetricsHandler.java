@@ -32,19 +32,17 @@ import org.apache.skywalking.oap.server.library.module.ModuleManager;
  * A handler deserializes the message of JVM Metrics and pushes it to downstream.
  */
 @Slf4j
-public class JVMMetricsHandler implements KafkaHandler {
+public class JVMMetricsHandler extends AbstractKafkaHandler {
 
     private final NamingControl namingLengthControl;
     private final JVMSourceDispatcher jvmSourceDispatcher;
 
-    private final KafkaFetcherConfig config;
-
-    public JVMMetricsHandler(ModuleManager moduleManager, KafkaFetcherConfig config) {
-        this.jvmSourceDispatcher = new JVMSourceDispatcher(moduleManager);
-        this.namingLengthControl = moduleManager.find(CoreModule.NAME)
-                                                .provider()
-                                                .getService(NamingControl.class);
-        this.config = config;
+    public JVMMetricsHandler(ModuleManager manager, KafkaFetcherConfig config) {
+        super(manager, config);
+        this.jvmSourceDispatcher = new JVMSourceDispatcher(manager);
+        this.namingLengthControl = manager.find(CoreModule.NAME)
+                                          .provider()
+                                          .getService(NamingControl.class);
     }
 
     @Override
@@ -64,7 +62,11 @@ public class JVMMetricsHandler implements KafkaHandler {
             builder.setServiceInstance(namingLengthControl.formatInstanceName(builder.getServiceInstance()));
 
             builder.getMetricsList().forEach(jvmMetric -> {
-                jvmSourceDispatcher.sendMetric(builder.getService(), builder.getServiceInstance(), jvmMetric);
+                try {
+                    jvmSourceDispatcher.sendMetric(builder.getService(), builder.getServiceInstance(), jvmMetric);
+                } catch (Exception e) {
+                    log.error(e.getMessage(), e);
+                }
             });
         } catch (Exception e) {
             log.error("handle record failed", e);
@@ -72,12 +74,7 @@ public class JVMMetricsHandler implements KafkaHandler {
     }
 
     @Override
-    public String getTopic() {
-        return config.getMm2SourceAlias() + config.getMm2SourceSeparator() + config.getTopicNameOfMetrics();
-    }
-
-    @Override
-    public String getConsumePartitions() {
-        return config.getConsumePartitions();
+    protected String getPlainTopic() {
+        return config.getTopicNameOfMetrics();
     }
 }

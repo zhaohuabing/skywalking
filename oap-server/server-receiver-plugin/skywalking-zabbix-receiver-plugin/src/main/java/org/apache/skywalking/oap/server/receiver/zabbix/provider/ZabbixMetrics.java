@@ -29,11 +29,11 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.math.NumberUtils;
 import org.apache.commons.lang3.time.StopWatch;
 import org.apache.commons.text.StringTokenizer;
-import org.apache.skywalking.apm.util.StringUtil;
-import org.apache.skywalking.oap.meter.analyzer.MetricConvert;
-import org.apache.skywalking.oap.meter.analyzer.dsl.Sample;
-import org.apache.skywalking.oap.meter.analyzer.dsl.SampleFamily;
-import org.apache.skywalking.oap.meter.analyzer.dsl.SampleFamilyBuilder;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
+import org.apache.skywalking.oap.meter.analyzer.v2.MetricConvert;
+import org.apache.skywalking.oap.meter.analyzer.v2.dsl.Sample;
+import org.apache.skywalking.oap.meter.analyzer.v2.dsl.SampleFamily;
+import org.apache.skywalking.oap.meter.analyzer.v2.dsl.SampleFamilyBuilder;
 import org.apache.skywalking.oap.server.core.analysis.meter.MeterSystem;
 import org.apache.skywalking.oap.server.library.util.CollectionUtils;
 import org.apache.skywalking.oap.server.receiver.zabbix.provider.config.ZabbixConfig;
@@ -118,6 +118,15 @@ public class ZabbixMetrics {
                     allServices.add(instanceGroup);
                     return instanceGroup;
                 }).appendMetrics(c)));
+    }
+
+    /**
+     * Sample time in milliseconds. {@code clockSeconds} is the Unix second and {@code nanos} is the
+     * nanoseconds within that second. Meter samples are milliseconds, so the sub-millisecond part of
+     * {@code nanos} is dropped.
+     */
+    static long sampleTimeMillis(final long clockSeconds, final long nanos) {
+        return TimeUnit.SECONDS.toMillis(clockSeconds) + TimeUnit.NANOSECONDS.toMillis(nanos);
     }
 
     /**
@@ -272,7 +281,7 @@ public class ZabbixMetrics {
             }
 
             return builder.hostName(data.getHost())
-                .timestamp(TimeUnit.SECONDS.toMillis(data.getClock()))
+                .timestamp(sampleTimeMillis(data.getClock(), data.getNs()))
                 .value(Double.parseDouble(data.getValue()))
                 .build();
         }

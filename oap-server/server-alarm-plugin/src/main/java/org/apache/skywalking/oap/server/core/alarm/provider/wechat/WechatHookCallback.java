@@ -18,94 +18,87 @@
 
 package org.apache.skywalking.oap.server.core.alarm.provider.wechat;
 
-import io.netty.handler.codec.http.HttpHeaderValues;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.http.HttpHeaders;
-import org.apache.http.HttpStatus;
-import org.apache.http.StatusLine;
-import org.apache.http.client.config.RequestConfig;
-import org.apache.http.client.methods.CloseableHttpResponse;
-import org.apache.http.client.methods.HttpPost;
-import org.apache.http.entity.ContentType;
-import org.apache.http.entity.StringEntity;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClients;
-import org.apache.skywalking.oap.server.core.alarm.AlarmCallback;
+import org.apache.skywalking.oap.server.core.alarm.AlarmHttpDeliveryMetrics;
 import org.apache.skywalking.oap.server.core.alarm.AlarmMessage;
+import org.apache.skywalking.oap.server.core.alarm.HttpAlarmCallback;
+import org.apache.skywalking.oap.server.core.alarm.provider.AlarmHooksType;
 import org.apache.skywalking.oap.server.core.alarm.provider.AlarmRulesWatcher;
 
-import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+
+import org.apache.skywalking.oap.server.library.util.CollectionUtils;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
 
 /**
  * Use SkyWalking alarm wechat webhook API.
  */
 @Slf4j
-public class WechatHookCallback implements AlarmCallback {
-    private static final int HTTP_CONNECT_TIMEOUT = 1000;
-    private static final int HTTP_CONNECTION_REQUEST_TIMEOUT = 1000;
-    private static final int HTTP_SOCKET_TIMEOUT = 10000;
-    private AlarmRulesWatcher alarmRulesWatcher;
-    private RequestConfig requestConfig;
+public class WechatHookCallback extends HttpAlarmCallback {
+    /**
+     * Error codes of the WeCom group robot API. Any other code is {@code rejected}. WeCom asks callers to read
+     * {@code errcode} only, as its {@code errmsg} texts may change.
+     */
+    private static final Map<String, String> ERROR_CODE_RESULTS = Map.of(
+        "-1", AlarmHttpDeliveryMetrics.RESULT_SERVER_ERROR,
+        "93000", AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED,
+        "93001", AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED,
+        "93004", AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED,
+        "93008", AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED,
+        "45009", AlarmHttpDeliveryMetrics.RESULT_RATE_LIMITED,
+        "45033", AlarmHttpDeliveryMetrics.RESULT_RATE_LIMITED
+    );
 
-    public WechatHookCallback(final AlarmRulesWatcher alarmRulesWatcher) {
+    private final AlarmRulesWatcher alarmRulesWatcher;
+
+    public WechatHookCallback(final AlarmRulesWatcher alarmRulesWatcher, final HttpClient httpClient,
+                              final Duration httpTimeout, final AlarmHttpDeliveryMetrics deliveryMetrics) {
+        super(httpClient, httpTimeout, deliveryMetrics, AlarmHooksType.wechat.name());
         this.alarmRulesWatcher = alarmRulesWatcher;
-        this.requestConfig = RequestConfig.custom()
-                .setConnectTimeout(HTTP_CONNECT_TIMEOUT)
-                .setConnectionRequestTimeout(HTTP_CONNECTION_REQUEST_TIMEOUT)
-                .setSocketTimeout(HTTP_SOCKET_TIMEOUT)
-                .build();
     }
 
     @Override
-    public void doAlarm(List<AlarmMessage> alarmMessages) {
-        if (this.alarmRulesWatcher.getWechatSettings() == null || this.alarmRulesWatcher.getWechatSettings().getWebhooks().isEmpty()) {
+    protected String classifyAcceptedBody(final String body) {
+        return resultOfBodyCode(body, "errcode", ERROR_CODE_RESULTS);
+    }
+
+    @Override
+    public void doAlarmCallback(List<AlarmMessage> alarmMessages, boolean isRecovery) throws Exception {
+        Map<String, WechatSettings> settingsMap = alarmRulesWatcher.getWechatSettings();
+        if (settingsMap == null || settingsMap.isEmpty()) {
             return;
         }
-        CloseableHttpClient httpClient = HttpClients.custom().build();
-        try {
-            this.alarmRulesWatcher.getWechatSettings().getWebhooks().forEach(url -> {
-                alarmMessages.forEach(alarmMessage -> {
-                    String requestBody = String.format(
-                            this.alarmRulesWatcher.getWechatSettings().getTextTemplate(), alarmMessage.getAlarmMessage()
-                    );
-                    sendAlarmMessage(httpClient, url, requestBody);
-                });
-            });
-        } finally {
-            try {
-                httpClient.close();
-            } catch (IOException e) {
-                log.error(e.getMessage(), e);
+
+        Map<String, List<AlarmMessage>> groupedMessages = groupMessagesByHook(alarmMessages);
+        for (Map.Entry<String, List<AlarmMessage>> entry : groupedMessages.entrySet()) {
+            var hookName = entry.getKey();
+            var messages = entry.getValue();
+            var setting = settingsMap.get(hookName);
+            if (setting == null || CollectionUtils.isEmpty(setting.getWebhooks()) || CollectionUtils.isEmpty(messages)) {
+                continue;
+            }
+            String template = getTemplate(setting, isRecovery);
+            if (StringUtil.isBlank(template)) {
+                continue;
+            }
+            for (final var url : setting.getWebhooks()) {
+                for (final var alarmMessage : messages) {
+                    final var requestBody = String.format(template, alarmMessage.getAlarmMessage());
+                    try {
+                        post(URI.create(url), requestBody, Map.of());
+                    } catch (Exception e) {
+                        log.error("Failed to send alarm message to Wechat webhook: {}", url, e);
+                    }
+                }
             }
         }
     }
 
-    private void sendAlarmMessage(CloseableHttpClient httpClient, String url, String requestBody) {
-        CloseableHttpResponse httpResponse = null;
-        try {
-            HttpPost post = new HttpPost(url);
-            post.setConfig(requestConfig);
-            post.setHeader(HttpHeaders.ACCEPT, HttpHeaderValues.APPLICATION_JSON.toString());
-            post.setHeader(HttpHeaders.CONTENT_TYPE, HttpHeaderValues.APPLICATION_JSON.toString());
-            StringEntity entity = new StringEntity(requestBody, ContentType.APPLICATION_JSON);
-            post.setEntity(entity);
-            httpResponse = httpClient.execute(post);
-            StatusLine statusLine = httpResponse.getStatusLine();
-            if (statusLine != null && statusLine.getStatusCode() != HttpStatus.SC_OK) {
-                log.error("send wechat alarm to {} failure. Response code: {} ", url, statusLine.getStatusCode());
-            }
-        } catch (Throwable e) {
-            log.error("send wechat alarm to {} failure.", url, e);
-        } finally {
-            if (httpResponse != null) {
-                try {
-                    httpResponse.close();
-                } catch (IOException e) {
-                    log.error(e.getMessage(), e);
-                }
-
-            }
-        }
+    private String getTemplate(WechatSettings setting, boolean isRecovery) {
+        return isRecovery ? setting.getRecoveryTextTemplate() : setting.getTextTemplate();
     }
 }

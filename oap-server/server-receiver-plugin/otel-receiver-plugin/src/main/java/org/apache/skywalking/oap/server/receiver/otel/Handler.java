@@ -18,41 +18,13 @@
 
 package org.apache.skywalking.oap.server.receiver.otel;
 
-import com.google.common.collect.ImmutableSet;
-import com.google.common.reflect.ClassPath;
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import org.apache.skywalking.oap.server.core.analysis.meter.MeterSystem;
-import org.apache.skywalking.oap.server.core.server.GRPCHandlerRegister;
+import org.apache.skywalking.oap.server.library.module.ModuleManager;
+import org.apache.skywalking.oap.server.library.module.ModuleStartException;
 
 public interface Handler {
-    static List<Handler> all() throws HandlerInitializationException {
-        ClassPath classpath;
-        try {
-            classpath = ClassPath.from(Handler.class.getClassLoader());
-        } catch (IOException e) {
-            throw new HandlerInitializationException("failed to load handler classes", e);
-        }
-        ImmutableSet<ClassPath.ClassInfo> classes = classpath.getTopLevelClassesRecursive(Handler.class.getPackage().getName());
-        List<Handler> result = new ArrayList<>();
-        for (ClassPath.ClassInfo each : classes) {
-            Class<?> c = each.load();
-            if (Arrays.stream(c.getInterfaces()).anyMatch(interfaceClass -> interfaceClass.isAssignableFrom(Handler.class))) {
-                try {
-                    result.add((Handler) c.newInstance());
-                } catch (InstantiationException | IllegalAccessException e) {
-                    throw new HandlerInitializationException("failed to get instances of handler classed", e);
-                }
-            }
-        }
-        return result;
-    }
+    void init(ModuleManager manager, OtelMetricReceiverConfig config);
 
     String type();
 
-    void active(List<String> enabledRules, MeterSystem service,
-        GRPCHandlerRegister grpcHandlerRegister);
-
+    void active() throws ModuleStartException;
 }

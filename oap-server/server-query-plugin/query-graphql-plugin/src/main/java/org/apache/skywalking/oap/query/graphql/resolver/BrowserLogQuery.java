@@ -17,9 +17,9 @@
 
 package org.apache.skywalking.oap.query.graphql.resolver;
 
-import com.coxautodev.graphql.tools.GraphQLQueryResolver;
-import java.io.IOException;
+import graphql.kickstart.tools.GraphQLQueryResolver;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import lombok.RequiredArgsConstructor;
 import org.apache.skywalking.oap.server.core.CoreModule;
 import org.apache.skywalking.oap.server.core.query.BrowserLogQueryService;
@@ -27,7 +27,7 @@ import org.apache.skywalking.oap.server.core.query.input.BrowserErrorLogQueryCon
 import org.apache.skywalking.oap.server.core.query.type.BrowserErrorLogs;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
 
-import static java.util.Objects.nonNull;
+import static org.apache.skywalking.oap.query.graphql.AsyncQueryUtils.queryAsync;
 
 @RequiredArgsConstructor
 public class BrowserLogQuery implements GraphQLQueryResolver {
@@ -41,19 +41,10 @@ public class BrowserLogQuery implements GraphQLQueryResolver {
         });
     }
 
-    public BrowserErrorLogs queryBrowserErrorLogs(BrowserErrorLogQueryCondition condition) throws IOException {
-        long startSecondTB = 0, endSecondTB = 0;
-        if (nonNull(condition.getQueryDuration())) {
-            startSecondTB = condition.getQueryDuration()
-                                     .getStartTimeBucketInSec();
-            endSecondTB = condition.getQueryDuration()
-                                   .getEndTimeBucketInSec();
-        }
-
-        return getQueryService().queryBrowserErrorLogs(
+    public CompletableFuture<BrowserErrorLogs> queryBrowserErrorLogs(BrowserErrorLogQueryCondition condition) {
+        return queryAsync(() -> getQueryService().queryBrowserErrorLogs(
             condition.getServiceId(), condition.getServiceVersionId(), condition.getPagePathId(),
-            condition.getPagePath(), condition.getCategory()
-            , startSecondTB, endSecondTB, condition.getPaging()
-        );
+            condition.getCategory(), condition.getQueryDuration(), condition.getPaging()
+        ));
     }
 }

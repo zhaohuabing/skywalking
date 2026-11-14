@@ -18,7 +18,8 @@
 
 package org.apache.skywalking.oap.server.receiver.envoy.als.mx;
 
-import com.google.common.base.Joiner;
+import Wasm.Common.FlatNode;
+import Wasm.Common.KeyVal;
 import com.google.protobuf.Any;
 import com.google.protobuf.ByteString;
 import com.google.protobuf.BytesValue;
@@ -27,11 +28,13 @@ import com.google.protobuf.Value;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.skywalking.oap.server.library.util.FieldsHelper;
 import org.apache.skywalking.oap.server.receiver.envoy.als.ServiceMetaInfo;
-import Wasm.Common.FlatNode;
-import Wasm.Common.KeyVal;
 
 import static com.google.common.base.Strings.nullToEmpty;
 import static java.util.Objects.nonNull;
@@ -63,7 +66,11 @@ public class ServiceMetaInfoAdapter extends ServiceMetaInfo {
         }
 
         final Struct metadata = requireNonNull(extractStructFromNodeFlatBuffer(flatNode));
-        FieldsHelper.SINGLETON.inflate(metadata, this);
+        if (log.isDebugEnabled()) {
+            log.debug("Node metadata: {}", metadata);
+        }
+        FieldsHelper.forClass(this.getClass().getSuperclass()).inflate(metadata, this);
+        appendTags(metadata);
     }
 
     /**
@@ -88,10 +95,6 @@ public class ServiceMetaInfoAdapter extends ServiceMetaInfo {
 
         builder.putFields("NAME", Value.newBuilder().setStringValue(nullToEmpty(node.name())).build());
         builder.putFields("NAMESPACE", Value.newBuilder().setStringValue(nullToEmpty(node.namespace())).build());
-        builder.putFields("OWNER", Value.newBuilder().setStringValue(nullToEmpty(node.owner())).build());
-        builder.putFields("WORKLOAD_NAME", Value.newBuilder().setStringValue(nullToEmpty(node.workloadName())).build());
-        builder.putFields("ISTIO_VERSION", Value.newBuilder().setStringValue(nullToEmpty(node.istioVersion())).build());
-        builder.putFields("MESH_ID", Value.newBuilder().setStringValue(nullToEmpty(node.meshId())).build());
         builder.putFields("CLUSTER_ID", Value.newBuilder().setStringValue(nullToEmpty(node.clusterId())).build());
 
         final Struct.Builder labels = Struct.newBuilder();
@@ -101,19 +104,6 @@ public class ServiceMetaInfoAdapter extends ServiceMetaInfo {
         }
         builder.putFields("LABELS", Value.newBuilder().setStructValue(labels).build());
 
-        final Struct.Builder platformMetadata = Struct.newBuilder();
-        for (int i = 0; i < node.platformMetadataLength(); i++) {
-            final KeyVal platformMd = node.platformMetadata(i);
-            platformMetadata.putFields(nullToEmpty(platformMd.key()), Value.newBuilder().setStringValue(nullToEmpty(platformMd.value())).build());
-        }
-        builder.putFields("PLATFORM_METADATA", Value.newBuilder().setStructValue(platformMetadata).build());
-
-        final List<String> appContainers = new ArrayList<>();
-        for (int i = 0; i < node.appContainersLength(); i++) {
-            appContainers.add(node.appContainers(i));
-        }
-        builder.putFields("APP_CONTAINERS", Value.newBuilder().setStringValue(Joiner.on(",").join(appContainers)).build());
-
         return builder.build();
     }
 
@@ -121,10 +111,34 @@ public class ServiceMetaInfoAdapter extends ServiceMetaInfo {
      * The same functionality with {@link ServiceMetaInfoAdapter#ServiceMetaInfoAdapter(com.google.protobuf.ByteString)}.
      *
      * @param metadata the {@link Struct struct} to adapt from.
-     * @throws Exception if the {@link Struct struct} can not be adapted to a {@link ServiceMetaInfo}.
      */
-    public ServiceMetaInfoAdapter(final Struct metadata) throws Exception {
-        FieldsHelper.SINGLETON.inflate(requireNonNull(metadata), this);
+    public ServiceMetaInfoAdapter(final Struct metadata) {
+        FieldsHelper.forClass(this.getClass().getSuperclass()).inflate(requireNonNull(metadata), this);
+        appendTags(requireNonNull(metadata));
+        if (log.isDebugEnabled()) {
+            log.info("Metadata is converted to: {}", this);
+        }
+    }
+
+    private void appendTags(Struct metadata) {
+        final Map<String, Value> fieldsMap = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        fieldsMap.putAll(metadata.getFieldsMap());
+        if (log.isDebugEnabled()) {
+            log.debug("Metadata field map: {}", fieldsMap);
+        }
+        final List<KeyValue> tags = new ArrayList<>();
+        if (fieldsMap.containsKey("NAME")) {
+            tags.add(new KeyValue("pod", fieldsMap.get("NAME").getStringValue()));
+        }
+        if (fieldsMap.containsKey("NAMESPACE")) {
+            tags.add(new KeyValue("namespace", fieldsMap.get("NAMESPACE").getStringValue()));
+        }
+        if (log.isDebugEnabled()) {
+            log.debug("Converted tags: {}", tags);
+        }
+        if (!tags.isEmpty()) {
+            this.setTags(tags);
+        }
     }
 
 }

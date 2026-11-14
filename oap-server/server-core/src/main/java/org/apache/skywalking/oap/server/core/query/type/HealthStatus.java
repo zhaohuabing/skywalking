@@ -20,11 +20,13 @@ package org.apache.skywalking.oap.server.core.query.type;
 
 import lombok.Getter;
 import lombok.Setter;
+import lombok.ToString;
 
 @Getter
 @Setter
+@ToString
 public class HealthStatus {
-    // score == 0 means healthy, otherwise it's unhealthy.
+    // score == 0 means healthy and no unhealthy component or connection, otherwise it's unhealthy.
     private int score;
     private String details;
 }

@@ -18,6 +18,7 @@
 
 package org.apache.skywalking.oap.server.core.source;
 
+import com.google.gson.JsonObject;
 import lombok.Getter;
 import lombok.Setter;
 
@@ -61,4 +62,36 @@ public class ServiceInstanceJVMThread extends Source {
     @Getter
     @Setter
     private long peakCount;
+    @Getter
+    @Setter
+    private long runnableStateThreadCount;
+    @Getter
+    @Setter
+    private long blockedStateThreadCount;
+    @Getter
+    @Setter
+    private long waitingStateThreadCount;
+    @Getter
+    @Setter
+    private long timedWaitingStateThreadCount;
+
+    @Override
+    public String toJson() {
+        final JsonObject obj = new JsonObject();
+        obj.addProperty("scope", scope());
+        obj.addProperty("entityId", getEntityId());
+        obj.addProperty("timeBucket", getTimeBucket());
+        obj.addProperty("id", id);
+        obj.addProperty("name", name);
+        obj.addProperty("serviceName", serviceName);
+        obj.addProperty("serviceId", serviceId);
+        obj.addProperty("liveCount", liveCount);
+        obj.addProperty("daemonCount", daemonCount);
+        obj.addProperty("peakCount", peakCount);
+        obj.addProperty("runnableStateThreadCount", runnableStateThreadCount);
+        obj.addProperty("blockedStateThreadCount", blockedStateThreadCount);
+        obj.addProperty("waitingStateThreadCount", waitingStateThreadCount);
+        obj.addProperty("timedWaitingStateThreadCount", timedWaitingStateThreadCount);
+        return obj.toString();
+    }
 }

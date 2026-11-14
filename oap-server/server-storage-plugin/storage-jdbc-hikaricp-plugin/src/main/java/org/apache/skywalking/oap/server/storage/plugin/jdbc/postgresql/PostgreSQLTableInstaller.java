@@ -19,27 +19,37 @@
 package org.apache.skywalking.oap.server.storage.plugin.jdbc.postgresql;
 
 import com.google.gson.JsonObject;
-import org.apache.skywalking.oap.server.core.analysis.NodeType;
+import org.apache.skywalking.oap.server.core.analysis.Layer;
 import org.apache.skywalking.oap.server.core.storage.model.ModelColumn;
 import org.apache.skywalking.oap.server.core.storage.type.StorageDataComplexObject;
 import org.apache.skywalking.oap.server.library.client.Client;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
-import org.apache.skywalking.oap.server.storage.plugin.jdbc.mysql.MySQLTableInstaller;
+import org.apache.skywalking.oap.server.storage.plugin.jdbc.common.JDBCTableInstaller;
+
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.List;
+import org.apache.skywalking.oap.server.core.profiling.trace.ProfileLanguageType;
 
-public class PostgreSQLTableInstaller extends MySQLTableInstaller {
-
-    public PostgreSQLTableInstaller(Client client, ModuleManager moduleManager, int maxSizeOfArrayColumn,
-                                    int numOfSearchableValuesPerTag) {
-        super(client, moduleManager, maxSizeOfArrayColumn, numOfSearchableValuesPerTag);
+public class PostgreSQLTableInstaller extends JDBCTableInstaller {
+    public PostgreSQLTableInstaller(Client client, ModuleManager moduleManager) {
+        super(client, moduleManager);
     }
 
     @Override
-    protected String transform(ModelColumn column, Class<?> type, Type genericType) {
+    public void start() {
+        /*
+         * Override column because the default column names in core are reserved in PostgreSQL.
+         */
+        overrideColumnName("value", "value_");
+        overrideColumnName("precision", "cal_precision");
+        overrideColumnName("match", "match_num");
+    }
+
+    @Override
+    protected String getColumnDefinition(ModelColumn column, Class<?> type, Type genericType) {
         final String storageName = column.getColumnName().getStorageName();
-        if (Integer.class.equals(type) || int.class.equals(type) || NodeType.class.equals(type)) {
+        if (Integer.class.equals(type) || int.class.equals(type) || Layer.class.equals(type) || ProfileLanguageType.class.equals(type)) {
             return storageName + " INT";
         } else if (Long.class.equals(type) || long.class.equals(type)) {
             return storageName + " BIGINT";
@@ -52,25 +62,21 @@ public class PostgreSQLTableInstaller extends MySQLTableInstaller {
         } else if (byte[].class.equals(type)) {
             return storageName + " TEXT";
         } else if (JsonObject.class.equals(type)) {
-            return storageName + " VARCHAR(" + column.getLength() + ")";
+            if (column.getLength() > 16383) {
+                return storageName + " TEXT";
+            } else {
+                return storageName + " VARCHAR(" + column.getLength() + ")";
+            }
         } else if (List.class.isAssignableFrom(type)) {
             final Type elementType = ((ParameterizedType) genericType).getActualTypeArguments()[0];
-            String oneColumnType = transform(column, (Class<?>) elementType, elementType);
-            // Remove the storageName as prefix
-            oneColumnType = oneColumnType.substring(storageName.length());
-            StringBuilder columns = new StringBuilder();
-            for (int i = 0; i < maxSizeOfArrayColumn; i++) {
-                columns.append(storageName).append("_").append(i).append(oneColumnType)
-                       .append(i == maxSizeOfArrayColumn - 1 ? "" : ",");
-            }
-            return columns.toString();
+            return getColumnDefinition(column, (Class<?>) elementType, elementType);
         } else {
             throw new IllegalArgumentException("Unsupported data type: " + type.getName());
         }
     }
 
     @Override
-    protected String getColumn(final ModelColumn column) {
+    public String getColumnDefinition(final ModelColumn column) {
         final String storageName = column.getColumnName().getStorageName();
         final Class<?> type = column.getType();
         if (StorageDataComplexObject.class.isAssignableFrom(type)) {
@@ -81,7 +87,13 @@ public class PostgreSQLTableInstaller extends MySQLTableInstaller {
             } else {
                 return storageName + " VARCHAR(" + column.getLength() + ")";
             }
+        } else if (JsonObject.class.equals(type)) {
+            if (column.getLength() > 16383) {
+                return storageName + " TEXT";
+            } else {
+                return storageName + " VARCHAR(" + column.getLength() + ")";
+            }
         }
-        return super.getColumn(column);
+        return super.getColumnDefinition(column);
     }
 }

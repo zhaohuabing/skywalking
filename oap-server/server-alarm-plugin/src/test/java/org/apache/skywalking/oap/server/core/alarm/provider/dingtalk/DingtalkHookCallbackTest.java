@@ -20,165 +20,164 @@ package org.apache.skywalking.oap.server.core.alarm.provider.dingtalk;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import org.apache.skywalking.apm.util.StringUtil;
+import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.server.ServerBuilder;
+import com.linecorp.armeria.testing.junit5.server.ServerExtension;
+import org.apache.skywalking.oap.server.core.alarm.AlarmHttpDeliveryMetrics;
 import org.apache.skywalking.oap.server.core.alarm.AlarmMessage;
+import org.apache.skywalking.oap.server.core.alarm.provider.AlarmHooksType;
 import org.apache.skywalking.oap.server.core.alarm.provider.AlarmRulesWatcher;
 import org.apache.skywalking.oap.server.core.alarm.provider.Rules;
 import org.apache.skywalking.oap.server.core.source.DefaultScopeDefine;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
+import org.apache.skywalking.oap.server.telemetry.none.MetricsCreatorNoop;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
-import javax.servlet.Servlet;
-import javax.servlet.ServletConfig;
-import javax.servlet.ServletException;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.InetSocketAddress;
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.Assert.assertTrue;
+public class DingtalkHookCallbackTest {
+    private static final AtomicBoolean IS_SUCCESS = new AtomicBoolean();
+    private static final AtomicInteger COUNT = new AtomicInteger();
+    private static final AtomicBoolean CHECK_SIGN = new AtomicBoolean();
 
-public class DingtalkHookCallbackTest implements Servlet {
-
-    private Server server;
-    private int port;
-    private volatile boolean isSuccess = false;
-    private int count;
-    private volatile boolean checkSign = false;
     private final String secret = "dummy-secret";
 
-    @Before
-    public void init() throws Exception {
-        server = new Server(new InetSocketAddress("127.0.0.1", 0));
-        ServletContextHandler servletContextHandler = new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
-        servletContextHandler.setContextPath("/dingtalkhook");
-        server.setHandler(servletContextHandler);
-        ServletHolder servletHolder = new ServletHolder();
-        servletHolder.setServlet(this);
-        servletContextHandler.addServlet(servletHolder, "/receiveAlarm");
-        server.start();
-        port = server.getURI().getPort();
-        assertTrue(port > 0);
-    }
+    @RegisterExtension
+    public static final ServerExtension SERVER = new ServerExtension() {
+        @Override
+        protected void configure(ServerBuilder sb) {
+            sb.service("/dingtalkhook/receiveAlarm", (ctx, req) -> HttpResponse.from(
+                req.aggregate().thenApply(r -> {
+                    final String content = r.content().toStringUtf8();
+                    final JsonObject jsonObject = new Gson().fromJson(content, JsonObject.class);
+                    final String type = jsonObject.get("msgtype").getAsString();
+                    if (CHECK_SIGN.get()) {
+                        String timestamp = ctx.queryParam("timestamp");
+                        String sign = ctx.queryParam("sign");
+                        if (StringUtil.isEmpty(timestamp) || StringUtil.isEmpty(sign)) {
+                            return HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR);
+                        }
+                    }
+                    if (type.equalsIgnoreCase("text")) {
+                        COUNT.incrementAndGet();
+                        if (COUNT.get() == 2) {
+                            IS_SUCCESS.set(true);
+                        }
+                        return HttpResponse.of(HttpStatus.OK);
+                    }
 
-    @Test
-    public void testDingtalkWebhookWithoutSign() {
-        List<DingtalkSettings.WebHookUrl> webHooks = new ArrayList<>();
-        webHooks.add(new DingtalkSettings.WebHookUrl("", "http://127.0.0.1:" + port + "/dingtalkhook/receiveAlarm?token=dummy_token"));
-        Rules rules = new Rules();
-        String template = "{\"msgtype\":\"text\",\"text\":{\"content\":\"Skywaling alarm: %s\"}}";
-        rules.setDingtalks(DingtalkSettings.builder().webhooks(webHooks).textTemplate(template).build());
-
-        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null);
-        DingtalkHookCallback dingtalkCallBack = new DingtalkHookCallback(alarmRulesWatcher);
-        List<AlarmMessage> alarmMessages = new ArrayList<>(2);
-        AlarmMessage alarmMessage = new AlarmMessage();
-        alarmMessage.setScopeId(DefaultScopeDefine.ALL);
-        alarmMessage.setRuleName("service_resp_time_rule");
-        alarmMessage.setAlarmMessage("alarmMessage with [DefaultScopeDefine.All]");
-        alarmMessages.add(alarmMessage);
-        AlarmMessage anotherAlarmMessage = new AlarmMessage();
-        anotherAlarmMessage.setRuleName("service_resp_time_rule_2");
-        anotherAlarmMessage.setScopeId(DefaultScopeDefine.ENDPOINT);
-        anotherAlarmMessage.setAlarmMessage("anotherAlarmMessage with [DefaultScopeDefine.Endpoint]");
-        alarmMessages.add(anotherAlarmMessage);
-        dingtalkCallBack.doAlarm(alarmMessages);
-        Assert.assertTrue(isSuccess);
-    }
-
-    @Test
-    public void testDingtalkWebhookWithSign() {
-        checkSign = true;
-        List<DingtalkSettings.WebHookUrl> webHooks = new ArrayList<>();
-        webHooks.add(new DingtalkSettings.WebHookUrl(secret, "http://127.0.0.1:" + port + "/dingtalkhook/receiveAlarm?token=dummy_token"));
-        Rules rules = new Rules();
-        String template = "{\"msgtype\":\"text\",\"text\":{\"content\":\"Skywaling alarm: %s\"}}";
-        rules.setDingtalks(DingtalkSettings.builder().webhooks(webHooks).textTemplate(template).build());
-
-        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null);
-        DingtalkHookCallback dingtalkCallBack = new DingtalkHookCallback(alarmRulesWatcher);
-        List<AlarmMessage> alarmMessages = new ArrayList<>(2);
-        AlarmMessage alarmMessage = new AlarmMessage();
-        alarmMessage.setScopeId(DefaultScopeDefine.ALL);
-        alarmMessage.setRuleName("service_resp_time_rule");
-        alarmMessage.setAlarmMessage("alarmMessage with [DefaultScopeDefine.All]");
-        alarmMessages.add(alarmMessage);
-        AlarmMessage anotherAlarmMessage = new AlarmMessage();
-        anotherAlarmMessage.setRuleName("service_resp_time_rule_2");
-        anotherAlarmMessage.setScopeId(DefaultScopeDefine.ENDPOINT);
-        anotherAlarmMessage.setAlarmMessage("anotherAlarmMessage with [DefaultScopeDefine.Endpoint]");
-        alarmMessages.add(anotherAlarmMessage);
-        dingtalkCallBack.doAlarm(alarmMessages);
-        Assert.assertTrue(isSuccess);
-    }
-
-    @After
-    public void stop() throws Exception {
-        server.stop();
-    }
-
-    @Override
-    public void init(ServletConfig servletConfig) throws ServletException {
-    }
-
-    @Override
-    public ServletConfig getServletConfig() {
-        return null;
-    }
-
-    @Override
-    public void service(ServletRequest request, ServletResponse response) throws ServletException, IOException {
-        HttpServletRequest httpServletRequest = (HttpServletRequest) request;
-        if (httpServletRequest.getContentType().equals("application/json")) {
-            InputStream inputStream = request.getInputStream();
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buffer = new byte[2048];
-            int readCntOnce;
-
-            while ((readCntOnce = inputStream.read(buffer)) >= 0) {
-                out.write(buffer, 0, readCntOnce);
-            }
-
-            JsonObject jsonObject = new Gson().fromJson(new String(out.toByteArray()), JsonObject.class);
-            String type = jsonObject.get("msgtype").getAsString();
-            if (checkSign) {
-                String timestamp = request.getParameter("timestamp");
-                String sign = request.getParameter("sign");
-                if (StringUtil.isEmpty(timestamp) || StringUtil.isEmpty(sign)) {
-                    ((HttpServletResponse) response).setStatus(500);
-                    return;
-                }
-            }
-            if (type.equalsIgnoreCase("text")) {
-                ((HttpServletResponse) response).setStatus(200);
-                count = count + 1;
-                if (count == 2) {
-                    isSuccess = true;
-                }
-                return;
-            }
-
-            ((HttpServletResponse) response).setStatus(500);
+                    return HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR);
+                })));
         }
+    };
+
+    @Test
+    public void testDingtalkWebhookWithoutSign() throws Exception {
+        List<DingtalkSettings.WebHookUrl> webHooks = new ArrayList<>();
+        webHooks.add(new DingtalkSettings.WebHookUrl("", "http://127.0.0.1:" + SERVER.httpPort() + "/dingtalkhook/receiveAlarm?token=dummy_token"));
+        Rules rules = new Rules();
+        String template = "{\"msgtype\":\"text\",\"text\":{\"content\":\"Skywaling alarm: %s\"}}";
+        DingtalkSettings setting1 = new DingtalkSettings("setting1", AlarmHooksType.dingtalk, true);
+        setting1.setWebhooks(webHooks);
+        setting1.setTextTemplate(template);
+        DingtalkSettings setting2 = new DingtalkSettings("setting2", AlarmHooksType.dingtalk, false);
+        setting2.setWebhooks(webHooks);
+        setting2.setTextTemplate(template);
+        rules.getDingtalkSettingsMap().put(setting1.getFormattedName(), setting1);
+        rules.getDingtalkSettingsMap().put(setting2.getFormattedName(), setting2);
+
+        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null, null);
+        DingtalkHookCallback dingtalkCallBack = new DingtalkHookCallback(alarmRulesWatcher, HttpClient.newHttpClient(), Duration.ofSeconds(12), new AlarmHttpDeliveryMetrics(new MetricsCreatorNoop()));
+        List<AlarmMessage> alarmMessages = new ArrayList<>(2);
+        AlarmMessage alarmMessage = new AlarmMessage();
+        alarmMessage.setScopeId(DefaultScopeDefine.SERVICE);
+        alarmMessage.setRuleName("service_resp_time_rule");
+        alarmMessage.setAlarmMessage("alarmMessage with [DefaultScopeDefine.All]");
+        alarmMessage.getHooks().add(setting1.getFormattedName());
+        alarmMessages.add(alarmMessage);
+        AlarmMessage anotherAlarmMessage = new AlarmMessage();
+        anotherAlarmMessage.setRuleName("service_resp_time_rule_2");
+        anotherAlarmMessage.setScopeId(DefaultScopeDefine.ENDPOINT);
+        anotherAlarmMessage.setAlarmMessage("anotherAlarmMessage with [DefaultScopeDefine.Endpoint]");
+        anotherAlarmMessage.getHooks().add(setting2.getFormattedName());
+        alarmMessages.add(anotherAlarmMessage);
+        dingtalkCallBack.doAlarm(alarmMessages);
+        Assertions.assertTrue(IS_SUCCESS.get());
     }
 
-    @Override
-    public String getServletInfo() {
-        return null;
+    @Test
+    public void testDingtalkWebhookWithSign() throws Exception {
+        CHECK_SIGN.set(true);
+        List<DingtalkSettings.WebHookUrl> webHooks = new ArrayList<>();
+        webHooks.add(new DingtalkSettings.WebHookUrl(secret, "http://127.0.0.1:" + SERVER.httpPort() + "/dingtalkhook/receiveAlarm?token=dummy_token"));
+        Rules rules = new Rules();
+        String template = "{\"msgtype\":\"text\",\"text\":{\"content\":\"Skywaling alarm: %s\"}}";
+        DingtalkSettings setting1 = new DingtalkSettings("setting1", AlarmHooksType.dingtalk, true);
+        setting1.setWebhooks(webHooks);
+        setting1.setTextTemplate(template);
+        DingtalkSettings setting2 = new DingtalkSettings("setting2", AlarmHooksType.dingtalk, false);
+        setting2.setWebhooks(webHooks);
+        setting2.setTextTemplate(template);
+        rules.getDingtalkSettingsMap().put(setting1.getFormattedName(), setting1);
+        rules.getDingtalkSettingsMap().put(setting2.getFormattedName(), setting2);
+
+        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null, null);
+        DingtalkHookCallback dingtalkCallBack = new DingtalkHookCallback(alarmRulesWatcher, HttpClient.newHttpClient(), Duration.ofSeconds(12), new AlarmHttpDeliveryMetrics(new MetricsCreatorNoop()));
+        List<AlarmMessage> alarmMessages = new ArrayList<>(2);
+        AlarmMessage alarmMessage = new AlarmMessage();
+        alarmMessage.setScopeId(DefaultScopeDefine.SERVICE);
+        alarmMessage.setRuleName("service_resp_time_rule");
+        alarmMessage.setAlarmMessage("alarmMessage with [DefaultScopeDefine.All]");
+        alarmMessage.getHooks().add(setting1.getFormattedName());
+        alarmMessages.add(alarmMessage);
+        AlarmMessage anotherAlarmMessage = new AlarmMessage();
+        anotherAlarmMessage.setRuleName("service_resp_time_rule_2");
+        anotherAlarmMessage.setScopeId(DefaultScopeDefine.ENDPOINT);
+        anotherAlarmMessage.setAlarmMessage("anotherAlarmMessage with [DefaultScopeDefine.Endpoint]");
+        anotherAlarmMessage.getHooks().add(setting2.getFormattedName());
+        alarmMessages.add(anotherAlarmMessage);
+        dingtalkCallBack.doAlarm(alarmMessages);
+        Assertions.assertTrue(IS_SUCCESS.get());
     }
 
-    @Override
-    public void destroy() {
+    @Test
+    public void errorCodesInAcceptedBodyAreClassified() {
+        final DingtalkHookCallback callback = new DingtalkHookCallback(
+            new AlarmRulesWatcher(new Rules(), null, null), HttpClient.newHttpClient(), Duration.ofSeconds(12),
+            new AlarmHttpDeliveryMetrics(new MetricsCreatorNoop()));
+        final String more = ", more: [https://ding-doc.dingtalk.com/doc#/serverapi2/qf2nxq]";
+
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_SUCCESS, callback.classifyAcceptedBody(
+            "{\"errcode\":0,\"errmsg\":\"ok\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_SUCCESS, callback.classifyAcceptedBody(
+            "{\"errcode\":\"0\",\"errmsg\":\"ok\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_REJECTED, callback.classifyAcceptedBody(
+            "{\"errcode\":310000,\"errmsg\":\"keywords not in content" + more + "\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED, callback.classifyAcceptedBody(
+            "{\"errcode\":310000,\"errmsg\":\"sign not match" + more + "\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED, callback.classifyAcceptedBody(
+            "{\"errcode\":310000,\"errmsg\":\"ip 10.0.0.1 not in whitelist" + more + "\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED, callback.classifyAcceptedBody(
+            "{\"errcode\":40035,\"errmsg\":\"missing parameter access_token\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_REJECTED, callback.classifyAcceptedBody(
+            "{\"errcode\":40035,\"errmsg\":\"missing parameter json\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED, callback.classifyAcceptedBody(
+            "{\"errcode\":300001,\"errmsg\":\"token is not exist\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_RATE_LIMITED, callback.classifyAcceptedBody(
+            "{\"errcode\":410100,\"errmsg\":\"send too fast\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_RATE_LIMITED, callback.classifyAcceptedBody(
+            "{\"status\":1111}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_SERVER_ERROR, callback.classifyAcceptedBody(
+            "{\"errcode\":-1,\"errmsg\":\"system busy\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_REJECTED, callback.classifyAcceptedBody(
+            "{\"errcode\":430102,\"errmsg\":\"inappropriate text\"}"));
     }
 }

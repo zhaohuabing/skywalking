@@ -19,8 +19,6 @@
 package org.apache.skywalking.oap.server.core.management.ui.template;
 
 import java.io.IOException;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.apache.skywalking.oap.server.core.query.input.DashboardSetting;
@@ -45,11 +43,17 @@ public class UITemplateManagementService implements Service {
         return uiTemplateManagementDAO;
     }
 
+    public DashboardConfiguration getTemplate(String id) throws IOException {
+        DashboardConfiguration configuration = getUITemplateManagementDAO().getTemplate(id);
+        if (configuration == null || configuration.isDisabled()) {
+            return null;
+        }
+        return configuration;
+    }
+
     public List<DashboardConfiguration> getAllTemplates(Boolean includingDisabled) throws IOException {
         final List<DashboardConfiguration> allTemplates =
             getUITemplateManagementDAO().getAllTemplates(includingDisabled);
-        // Make sure the template in A-Za-z
-        Collections.sort(allTemplates, Comparator.comparing(DashboardConfiguration::getName));
         return allTemplates;
     }
 
@@ -61,7 +65,29 @@ public class UITemplateManagementService implements Service {
         return getUITemplateManagementDAO().changeTemplate(setting);
     }
 
-    public TemplateChangeStatus disableTemplate(String name) throws IOException {
-        return getUITemplateManagementDAO().disableTemplate(name);
+    public TemplateChangeStatus disableTemplate(String id) throws IOException {
+        return getUITemplateManagementDAO().disableTemplate(id);
+    }
+
+    public void addIfNotExist(DashboardSetting setting) throws IOException {
+        DashboardConfiguration configuration = getUITemplateManagementDAO().getTemplate(setting.getId());
+        if (configuration == null) {
+            getUITemplateManagementDAO().addTemplate(setting);
+        }
+    }
+
+    /**
+     * Add or replace: if a template with the same id already exists, overwrite it;
+     * otherwise create a new one. Used by the initializer when
+     * {@code SW_UI_TEMPLATE_FORCE_RELOAD=true} so that edits to shipped templates
+     * take effect without wiping the storage container.
+     */
+    public void addOrReplace(DashboardSetting setting) throws IOException {
+        DashboardConfiguration configuration = getUITemplateManagementDAO().getTemplate(setting.getId());
+        if (configuration == null) {
+            getUITemplateManagementDAO().addTemplate(setting);
+        } else {
+            getUITemplateManagementDAO().changeTemplate(setting);
+        }
     }
 }

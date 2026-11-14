@@ -8,6 +8,105 @@ The LAL config files are in YAML format, and are located under directory `lal`. 
 set `log-analyzer/default/lalFiles` in the `application.yml` file or set environment variable `SW_LOG_LAL_FILES` to
 activate specific LAL config files.
 
+## OTLP log attribute mapping
+
+When logs arrive via the OTLP receiver, resource attributes are mapped to `LogData` fields:
+
+| Resource attribute | LogData field | Notes |
+|---|---|---|
+| `service.name` | `service` | SkyWalking service name |
+| `service.instance.id` | `serviceInstance` | OTel standard ([spec](https://opentelemetry.io/docs/specs/semconv/resource/#service)). Falls back to `service.instance` for backward compatibility. |
+| `service.layer` | `layer` | Routes to the LAL rule with matching `layer` declaration |
+
+Log record attributes are available via `tag("attribute_name")` in LAL rules. Attribute keys
+retain their original names (dots are NOT converted to underscores in log attributes).
+
+All OTLP resource attributes are also available via `sourceAttribute("attribute_name")` in LAL rules.
+Unlike `tag()` which reads from persistent log record tags (`tagsRawData`), `sourceAttribute()` reads
+from non-persistent source context — the values are available during LAL processing but are NOT stored.
+Use `tag 'key': sourceAttribute("attr")` in the extractor to selectively persist specific attributes.
+
+## Layer
+Layer should be declared in the LAL script to represent the analysis scope of the logs.
+LAL rules are routed by layer — only rules matching the incoming log's layer are evaluated.
+
+### Inline layer declarations (`layerDefinitions:`)
+
+A LAL file may declare its own custom layers with a top-level `layerDefinitions:` block.
+Each entry is funneled through `Layer.register(name, ordinal, normal)` **before**
+the rules in the same file compile, so a LAL file is fully self-describing — a new
+monitoring target can land as a single LAL file without an enum edit elsewhere in the OAP
+source.
+
+```yaml
+layerDefinitions:
+  - name: IOT_FLEET    # upper-snake-case, must match [A-Z][A-Z0-9_]*
+    ordinal: 1000      # unique across all layers; >= 1000 recommended
+    normal: true       # true = agent-installed (default), false = conjectured/virtual
+
+rules:
+  - name: iot-fleet-access
+    layer: IOT_FLEET
+    dsl: |
+      filter {
+        text { regexp $/(?<status>\d+)\s+(?<path>\S+)/$ }
+        sink { sampler { rateLimit { rpm 1800 } } }
+      }
+```
+
+Notes:
+- **Storage encoding is the ordinal int**, persisted in BanyanDB / Elasticsearch / JDBC.
+  Every OAP node that reads or writes a given layer must agree on its `(name, ordinal)`
+  mapping — deploy a LAL file with `layerDefinitions:` identically across all nodes.
+- **Identical re-registration is a no-op**, so the same `IOT_FLEET` entry can appear in
+  multiple LAL files (and additionally in a MAL file, in `layer-extensions.yml`, or via the
+  `LayerExtension` SPI). Conflicting registrations cause OAP boot to fail loudly with the
+  offending file in the stack trace.
+- **Ordinals 0–50** are in active use by the OAP distribution's built-in layers; **51–999**
+  are reserved by convention for future built-ins. External layers should start at `>= 1000`
+  — enforcement is not strict, but staying above the reserved band avoids upgrade-time
+  collisions.
+- `layer: auto` works with extension layers too — the extractor body can call
+  `layer "IOT_FLEET"` and the runtime resolves it through the registry.
+
+Three other registration paths exist for layers that are **not** specific to a LAL file: an
+operator-managed `layer-extensions.yml`, a `LayerExtension` Java SPI for plugin jars, and
+the built-in static fields in `Layer.java` for distribution layers. See
+[`Layer.java`](../../../oap-server/server-core/src/main/java/org/apache/skywalking/oap/server/core/analysis/Layer.java)
+javadoc for the full picture.
+
+When `layer: auto` is declared, the rule matches logs where `service.layer` is absent (common for OTLP
+sources that don't set this attribute). The script is expected to set the layer in the extractor:
+
+```yaml
+rules:
+  - name: detect-ios
+    layer: auto
+    dsl: |
+      filter {
+        if (sourceAttribute("os.name") != "iOS" && sourceAttribute("os.name") != "iPadOS") {
+          abort {}
+        }
+        extractor {
+          layer "IOS"
+          instance sourceAttribute("service.version")
+          tag 'device.model': sourceAttribute("device.model.identifier")
+        }
+        sink {}
+      }
+```
+
+In `layer: auto` mode, `abort` and `drop` have distinct meanings:
+
+- **`abort {}`** — "not mine, let others try." If all auto rules abort, the log falls back to
+  `GENERAL` layer processing automatically.
+- **`drop {}`** — "mine, but sampled out." The rule claimed the log (no GENERAL fallback) but
+  chose not to persist it (e.g., sampling). Use this for rate limiting or conditional dropping
+  within a recognized log type.
+
+If an auto rule claims the log (doesn't abort) but doesn't set a layer, the log is warned and
+dropped at persistence time.
+
 ## Filter
 
 A filter is a group of [parser](#parser), [extractor](#extractor) and [sink](#sink). Users can use one or more filters
@@ -28,7 +127,7 @@ are cases where you may want the filter chain to stop earlier when specified con
 the remaining filter chain from where it's declared, and all the remaining components won't be executed at all.
 `abort` function serves as a fast-fail mechanism in LAL.
 
-```groovy
+```
 filter {
     if (log.service == "TestingService") { // Don't waste resources on TestingServices
         abort {} // all remaining components won't be executed at all
@@ -39,6 +138,58 @@ filter {
 
 Note that when you put `regexp` in an `if` statement, you need to surround the expression with `()`
 like `regexp(<the expression>)`, instead of `regexp <the expression>`.
+
+- `tag`
+
+`tag` function provide a convenient way to get the value of a tag key.
+
+We can add tags like following:
+``` JSON
+[
+   {
+      "tags":{
+         "data":[
+            {
+               "key":"TEST_KEY",
+               "value":"TEST_VALUE"
+            }
+         ]
+      },
+      "body":{
+         ...
+      }
+      ...
+   }
+]
+```
+And we can use this method to get the value of the tag key `TEST_KEY`.
+```
+filter {
+    if (tag("TEST_KEY") == "TEST_VALUE") {
+         ...
+    }
+}
+```
+
+- `sourceAttribute`
+
+`sourceAttribute` function provides access to non-persistent source context attributes. For OTLP logs,
+these are the resource attributes (e.g., `os.name`, `device.model.identifier`). Unlike `tag()`, these
+values are NOT persisted in `tagsRawData` — they are only available during LAL processing.
+
+```
+filter {
+    if (sourceAttribute("os.name") == "iOS") {
+        extractor {
+            layer "IOS"
+            tag 'device.model': sourceAttribute("device.model.identifier")
+        }
+    }
+    sink {}
+}
+```
+
+Returns empty string if the key is not found.
 
 ### Parser
 
@@ -60,7 +211,7 @@ See examples below.
 
 #### `json`
 
-```groovy
+```
 filter {
     json {
         abortOnFailure true // this is optional because it's default behaviour
@@ -68,9 +219,15 @@ filter {
 }
 ```
 
+`json` reads the JSON body of the [native log protocol](../api/log-data-protocol.md). When the JSON body is empty but a plain-text body is present — for example, the [OTLP log receiver](../setup/backend/log-otlp.md) delivers every string body as text, even JSON-shaped ones — the parser tries the text body as JSON instead. A parse failure of either form follows `abortOnFailure`.
+
+When `json` parses successfully from a text body, the log is normalized to a JSON body for the matching rule: the rule persists it with content type `JSON` and `log.body` reads the JSON content within that rule. This makes a JSON-shaped log delivered over any transport persist and render as JSON once a `json {}` rule matches it. The normalization is scoped to the matching rule — other rules analyzing the same log still see the original text body.
+
+A parse failure that aborts the log is reported at WARN, rate-limited to one report per minute per parser with the number of suppressed failures included in the next report. With `abortOnFailure false`, a failure is expected control flow: it is only logged at DEBUG, the log continues through the filter chain, and `parsed.*` reads return the metadata fallback fields (or `null`).
+
 #### `yaml`
 
-```groovy
+```
 filter {
     yaml {
         abortOnFailure true // this is optional because it's default behaviour
@@ -88,7 +245,7 @@ For unstructured logs, there are some `text` parsers for use.
 all the captured groups can be used later in the extractors or sinks.
 `regexp` returns a `boolean` indicating whether the log matches the pattern or not.
 
-```groovy
+```
 filter {
     text {
         abortOnFailure true // this is optional because it's default behaviour
@@ -105,15 +262,109 @@ filter {
 }
 ```
 
-- `grok` (TODO)
-
-We're aware of certains performance issues in the grok Java library, and so we're currently conducting investigations and benchmarking. Contributions are
-welcome.
-
 ### Extractor
 
 Extractors aim to extract metadata from the logs. The metadata can be a service name, a service instance name, an
 endpoint name, or even a trace ID, all of which can be associated with the existing traces and metrics.
+
+#### Local variables (`def`)
+
+You can use `def` to declare local variables in the extractor (or at the filter level). This is useful when an
+expression is reused multiple times, or when you want to break a long chain into readable steps.
+
+The syntax is:
+
+```
+def variableName = expression
+def variableName = expression as TypeName
+```
+
+The variable type is inferred from the initializer expression at compile time. `def` is not limited to JSON — it works
+with any value access expression whose type is resolvable on the classpath, including protobuf getter chains,
+`log.*` fields, and Gson JSON method chains. Subsequent method calls on the variable are validated at compile time
+against the inferred type.
+
+You can optionally add an explicit `as` type cast to narrow the variable type. The cast type can be a built-in
+type (`String`, `Long`, `Integer`, `Boolean`) or a fully qualified class name:
+
+```
+def value = someExpression as com.example.MyType
+```
+
+This is useful when the compiler infers a type that is too general (e.g., `Object` from a generic API return)
+and you know the concrete runtime type. The cast tells the compiler which type to use for subsequent method chain
+validation. Note that `as` performs a Java cast — it does **not** convert between types. For JSON conversion, use
+`toJson()` or `toJsonArray()` instead.
+
+The FQCN must be resolvable on the classpath at compile time. If the class is not found, the OAP server will fail
+to start.
+
+Two built-in conversion functions are provided for JSON interoperability:
+
+- `toJson(expr)` — converts a value to a Gson `JsonObject`. Works with JSON strings, `Map`, and protobuf `Struct`.
+- `toJsonArray(expr)` — converts a value to a Gson `JsonArray`. Works with JSON array strings.
+
+After declaration, the variable can be used in subsequent expressions with full null-safe navigation support (`?.`).
+
+Def variables can also be used as method arguments. This is useful when you need to look up a dynamic key:
+
+```
+filter {
+    json {}
+    extractor {
+        def key = parsed.fieldName as String
+        def config = toJson(parsed.metadata)
+        tag 'val': config?.get(key)?.getAsString()
+    }
+    sink {}
+}
+```
+
+Example — extracting fields from a protobuf input type (no JSON conversion needed):
+
+```
+filter {
+    extractor {
+        def resp = parsed?.response
+        tag 'status.code': resp?.responseCode?.value
+        tag 'resp.flags': resp?.responseCodeDetails
+    }
+    sink {}
+}
+```
+
+Example — extracting JWT claims from envoy access log filter metadata via `toJson()`:
+
+```
+filter {
+    extractor {
+        def jwt = toJson(parsed?.commonProperties?.metadata
+            ?.filterMetadataMap?.get("envoy.filters.http.jwt_authn"))
+        def payload = jwt?.getAsJsonObject("payload")
+        if (payload != null) {
+            tag 'email': payload?.get("email")?.getAsString()
+            tag 'group': payload?.get("group")?.getAsString()
+        }
+    }
+    sink {}
+}
+```
+
+Example — parsing a JSON log body field into a structured object:
+
+```
+filter {
+    json {}
+    extractor {
+        def config = toJson(parsed.metadata)
+        tag 'env': config?.get("env")?.getAsString()
+        tag 'region': config?.getAsJsonObject("location")?.get("region")?.getAsString()
+    }
+    sink {}
+}
+```
+
+#### Standard fields
 
 - `service`
 
@@ -127,7 +378,7 @@ persisted (if not dropped) and is used to associate with traces / metrics.
 
 - `endpoint`
 
-`endpoint` extracts the service instance name from the `parsed` result, and set it into the `LogData`, which will be
+`endpoint` extracts the endpoint name from the `parsed` result, and set it into the `LogData`, which will be
 persisted (if not dropped) and is used to associate with traces / metrics.
 
 - `traceId`
@@ -143,31 +394,94 @@ not dropped) and is used to associate with traces / metrics.
 - `spanId`
 
 `spanId` extracts the span ID from the `parsed` result, and set it into the `LogData`, which will be persisted (if not
-dropped) and is used to associate with traces / metrics.
+dropped) and is used to associate with traces / metrics. It is a SkyWalking span ID: a number, counted within the segment
+`segmentId` names.
+
+- `otlpSpanId`
+
+`otlpSpanId` sets the span ID of an OTLP or Zipkin span, 16 lowercase hex characters, which `spanId` cannot hold. It is
+persisted with the log, so the log can be queried by the span through `relatedTrace { traceId, otlpSpanId }`. It is an
+[output field](#output-fields) of the default output type rather than a keyword, so it works in rules without a custom
+`outputType`:
+
+```
+filter {
+    text {
+        regexp $/trace_id=(?<traceId>[0-9a-f]{32}) span_id=(?<spanId>[0-9a-f]{16})/$
+    }
+    extractor {
+        traceId parsed.traceId as String
+        otlpSpanId parsed.spanId as String
+    }
+}
+```
+
+The [OTLP log receiver](../setup/backend/log-otlp.md) sets it from the record's own `span_id`; a rule reads it as
+`log.traceContext.otlpSpanId`.
 
 - `timestamp`
 
 `timestamp` extracts the timestamp from the `parsed` result, and set it into the `LogData`, which will be persisted (if
 not dropped) and is used to associate with traces / metrics.
 
-The unit of `timestamp` is millisecond.
+The parameter of `timestamp` can be a millisecond:
+```
+filter {
+    // ... parser
+
+    extractor {
+        timestamp parsed.time as String
+    }
+}
+```
+or a datetime string with a specified pattern:
+```
+filter {
+    // ... parser
+
+    extractor {
+        timestamp parsed.time as String, "yyyy-MM-dd HH:mm:ss"
+    }
+}
+```
+
+- `layer`
+
+`layer` extracts the [layer](../../../oap-server/server-core/src/main/java/org/apache/skywalking/oap/server/core/analysis/Layer.java) from the `parsed` result, and set it into the `LogData`, which will be persisted (if
+not dropped) and is used to associate with service.
 
 - `tag`
 
 `tag` extracts the tags from the `parsed` result, and set them into the `LogData`. The form of this extractor should look something like this: `tag key1: value, key2: value2`. You may use the properties of `parsed` as both keys and values.
 
-```groovy
+```
 filter {
     // ... parser
 
     extractor {
         tag level: parsed.level, (parsed.statusCode): parsed.statusMsg
         tag anotherKey: "anotherConstantValue"
+        layer 'GENERAL'
     }
 }
 ```
 
-- `metrics`
+#### Output fields
+
+When a rule declares a custom `outputType` (see [Output Type](#output-type)), the extractor can set fields specific to
+that output type. Any identifier in the extractor that is not a standard field (listed above) is treated as an
+**output field assignment**. The syntax is the same as standard fields:
+
+```
+fieldName valueExpression as Type
+```
+
+The LAL compiler validates at boot time that a matching setter exists on the output type class (e.g., `setStatement(String)`
+for field `statement`). If no setter is found, the OAP server will fail to start, ensuring early error detection.
+
+See [Slow SQL](#slow-sql-database-slow-statement) and [Sampled Trace](#sampled-trace-network-profiling) for concrete examples.
+
+#### `metrics`
 
 `metrics` extracts / generates metrics from the logs, and sends the generated metrics to the meter system. You may
 configure [MAL](mal.md) for further analysis of these metrics. The dedicated MAL config files are under
@@ -180,12 +494,12 @@ log-analyzer:
   selector: ${SW_LOG_ANALYZER:default}
   default:
     lalFiles: ${SW_LOG_LAL_FILES:my-lal-config} # files are under "lal" directory
-    malFiles: ${SW_LOG_MAL_FILES:my-lal-mal-config,another-lal-mal-config} # files are under "log-mal-rules" directory
+    malFiles: ${SW_LOG_MAL_FILES:my-lal-mal-config, folder1/another-lal-mal-config, folder2/*} # files are under "log-mal-rules" directory
 ```
 
 Examples are as follows:
 
-```groovy
+```
 filter {
     // ...
     extractor {
@@ -229,27 +543,31 @@ like percentiles.
 
 metrics:
   - name: response_time_percentile
-    exp: http_response_time.sum(['le', 'service', 'instance']).increase('PT5M').histogram().histogram_percentile([50,70,90,99])
+    exp: http_response_time.sum(['le', 'service', 'instance']).increase('PT5M').histogram().histogram_percentile([50,75,90,95,99])
 ```
 
 ### Sink
 
-Sinks are the persistent layer of the LAL. By default, all the logs of each filter are persisted into the storage.
-However, some mechanisms allow you to selectively save some logs, or even drop all the logs after you've
-extracted useful information, such as metrics.
+Sinks are the persistent layer of the LAL. An explicit `sink {}` block is **required** for any data to be persisted.
+Without a `sink {}` block, no data is saved — this applies to all LAL rules, including those using custom `outputType`.
+
+Within the sink, you can use samplers, droppers, and enforcers to control which logs are persisted.
+An empty `sink {}` block means all logs are saved unconditionally.
 
 #### Sampler
 
-Sampler allows you to save the logs in a sampling manner. Currently, the sampling strategy `rateLimit` is supported. We welcome
-contributions on more sampling strategies. If multiple samplers are specified, the last one determines the final sampling
-result. See examples in [Enforcer](#enforcer).
+Sampler allows you to save the logs in a sampling manner. Currently, the following sampling strategies are supported:
 
-`rateLimit` samples `n` logs at a maximum rate of 1 second. `rateLimit("SamplerID")` requires an ID for the sampler. Sampler
-declarations with the same ID share the same sampler instance, thus sharing the same `qps` and resetting logic.
+- `rateLimit`: samples `n` logs at a maximum rate of 1 minute. `rateLimit("SamplerID")` requires an ID for the sampler.
+Sampler declarations with the same ID share the same sampler instance, thus sharing the same `rpm` and resetting logic.
+- `possibility`: every piece of log has a pseudo possibility of `percentage` to be sampled, the possibility was generated by Java random number generator and compare to the given `percentage` option.
 
-Examples:
+We welcome contributions on more sampling strategies. If multiple samplers are specified, the last one determines the
+final sampling result. See examples in [Enforcer](#enforcer).
 
-```groovy
+Examples 1, `rateLimit`:
+
+```
 filter {
     // ... parser
 
@@ -257,11 +575,31 @@ filter {
         sampler {
             if (parsed.service == "ImportantApp") {
                 rateLimit("ImportantAppSampler") {
-                    qps 30  // samples 30 pieces of logs every second for service "ImportantApp"
+                    rpm 1800  // samples at most 1800 logs per minute for service "ImportantApp"
                 }
             } else {
                 rateLimit("OtherSampler") {
-                    qps 3   // samples 3 pieces of logs every second for other services than "ImportantApp"
+                    rpm 180   // samples at most 180 logs per minute for other services than "ImportantApp"
+                }
+            }
+        }
+    }
+}
+```
+
+Examples 2, `possibility`:
+
+```
+filter {
+    // ... parser
+
+    sink {
+        sampler {
+            if (parsed.service == "ImportantApp") {
+                possibility(80) { // samples 80% of the logs for service "ImportantApp"
+                }
+            } else {
+                possibility(30) { // samples 30% of the logs for other services than "ImportantApp"
                 }
             }
         }
@@ -274,7 +612,7 @@ filter {
 Dropper is a special sink, meaning that all logs are dropped without any exception. This is useful when you want to
 drop debugging logs.
 
-```groovy
+```
 filter {
     // ... parser
 
@@ -292,7 +630,7 @@ filter {
 
 Or if you have multiple filters, some of which are for extracting metrics, only one of them has to be persisted.
 
-```groovy
+```
 filter { // filter A: this is for persistence
     // ... parser
 
@@ -303,8 +641,8 @@ filter { // filter A: this is for persistence
     }
 }
 filter { // filter B:
-    // ... extractors to generate many metrics
-    extractors {
+    // ... extractor to generate many metrics
+    extractor {
         metrics {
             // ... metrics
         }
@@ -321,7 +659,7 @@ Enforcer is another special sink that forcibly samples the log. A typical use ca
 configured a sampler and want to save some logs forcibly, such as to save error logs even if the sampling mechanism
 has been configured.
 
-```groovy
+```
 filter {
     // ... parser
 
@@ -329,7 +667,7 @@ filter {
         sampler {
             // ... sampler configs
         }
-        if (parserd.level == "ERROR" || parsed.userId == "TestingUserId") { // sample error logs or testing users' logs (userId == "TestingUserId") even if the sampling strategy is configured
+        if (parsed.level == "ERROR" || parsed.userId == "TestingUserId") { // sample error logs or testing users' logs (userId == "TestingUserId") even if the sampling strategy is configured
             enforcer {
             }
         }
@@ -337,20 +675,197 @@ filter {
 }
 ```
 
-You can use `enforcer` and `dropper` to simulate a probabilistic sampler like this.
+## Output Type
 
-```groovy
-filter {
-    // ... parser
+By default, each LAL rule produces a `Log` source object that is persisted to storage. However, some use cases require
+transforming log data into a different entity type — for example, converting slow SQL logs into `DatabaseSlowStatement`
+records or network profiling logs into `SampledTraceRecord`. The `outputType` mechanism makes this configurable per rule,
+without requiring any DSL grammar changes.
 
-    sink {
-        sampler { // simulate a probabilistic sampler with sampler rate 30% (not accurate though)
-            if (Math.abs(Math.random()) > 0.3) {
-                enforcer {}
-            } else {
-                dropper {}
-            }
-        }
+### Configuration
+
+Set `outputType` at the rule level in the YAML config. You can use the short name registered by
+the `LALOutputBuilder` SPI (recommended), or a fully qualified class name:
+
+```yaml
+rules:
+  - name: my-rule
+    layer: MYSQL
+    outputType: SlowSQL    # short name registered by DatabaseSlowStatementBuilder
+    dsl: |
+      filter {
+        // ...
+      }
+```
+
+### Resolution order
+
+The output type is resolved per-rule in the following priority:
+
+1. **Per-rule YAML config** — the `outputType` field shown above (highest priority).
+   Short names (no `.`) are resolved via `ServiceLoader<LALOutputBuilder>`; fully qualified class names
+   are resolved via `Class.forName()` as a fallback.
+2. **`LALSourceTypeProvider` SPI** — a default output type registered by receiver plugins for a specific layer
+3. **`Log.class`** — the fallback if not specified anywhere
+
+### Two output paths
+
+LAL supports two kinds of output types:
+
+| Output path | Base type | How it works |
+|---|---|---|
+| **Log path** | Subclass of `AbstractLog` | The sink populates standard log fields (service, instance, endpoint, tags, body, etc.) from `LogData` and persists via `SourceReceiver` |
+| **Builder path** | Implements `LALOutputBuilder` | The sink creates the builder, calls `init(LogData, Optional<Object> extraLog, NamingControl)` to pre-populate standard fields, applies output field values via setters, then calls `complete(SourceReceiver)` to validate and dispatch |
+
+The builder path is used when the output type implements the `LALOutputBuilder` interface. This is how SkyWalking's
+built-in slow SQL and sampled trace features work.
+
+### Built-in output types
+
+#### Slow SQL (Database Slow Statement)
+
+SkyWalking converts slow SQL logs into `DatabaseSlowStatement` records for database slow query analysis (MySQL, PostgreSQL, Redis, etc.).
+
+Use `outputType: SlowSQL` in your rule config.
+The available output fields are: `id`, `statement`, `latency`. Standard fields (`service`, `layer`, `timestamp`) are handled
+by the extractor as usual and pre-populated via `init()` from `LogData`.
+
+We require a log tag `"LOG_KIND" = "SLOW_SQL"` to make OAP distinguish slow SQL logs from other log reports.
+
+**Note**, slow SQL sampling would only flag this SQL in the candidate list. The OAP server would run statistic per service
+and only persistent the top 50 every 10(controlled by `topNReportPeriod: ${SW_CORE_TOPN_REPORT_PERIOD:10}`) minutes by default.
+
+See bundled LAL scripts for complete examples:
+[mysql-slowsql.yaml](../../../oap-server/server-starter/src/main/resources/lal/mysql-slowsql.yaml),
+[pgsql-slowsql.yaml](../../../oap-server/server-starter/src/main/resources/lal/pgsql-slowsql.yaml),
+[redis-slowsql.yaml](../../../oap-server/server-starter/src/main/resources/lal/redis-slowsql.yaml).
+
+#### Sampled Trace (Network Profiling)
+
+SkyWalking converts network profiling sampled trace logs into `SampledTraceRecord` for process-level network analysis.
+
+Use `outputType: SampledTrace` in your rule config.
+The available output fields are: `latency`, `uri`, `reason`, `processId`, `destProcessId`, `detectPoint`, `componentId`.
+
+We require a log tag `"LOG_KIND" = "NET_PROFILING_SAMPLED_TRACE"` to make OAP distinguish sampled trace logs from other log reports.
+
+See bundled LAL scripts for complete examples:
+[envoy-als.yaml](../../../oap-server/server-starter/src/main/resources/lal/envoy-als.yaml),
+[k8s-service.yaml](../../../oap-server/server-starter/src/main/resources/lal/k8s-service.yaml),
+[mesh-dp.yaml](../../../oap-server/server-starter/src/main/resources/lal/mesh-dp.yaml).
+
+### Extending: custom output types
+
+For developers who need to create custom output types (implementing `LALOutputBuilder`, extending
+`AbstractLog`, registering `LALSourceTypeProvider` SPI, or defining custom input types), see the
+[LAL Extension Developer Guide](../guides/lal-extension.md).
+
+<!--
+Developer-facing content below is kept for reference but the canonical guide is lal-extension.md.
+-->
+
+<!--
+#### Approach 1: Implement `LALOutputBuilder`
+
+Use this when you need full control over validation and dispatching, or when the output is not a simple `AbstractLog` subclass.
+
+1. Create a class that implements `org.apache.skywalking.oap.server.core.source.LALOutputBuilder`:
+
+```java
+public class MyCustomBuilder implements LALOutputBuilder {
+    public static final String NAME = "MyCustom";
+
+    @Setter @Getter
+    private String myField;
+    @Setter @Getter
+    private long myMetric;
+
+    public MyCustomBuilder() {} // no-arg constructor required
+
+    @Override
+    public String name() { return NAME; }
+
+    @Override
+    public void init(LogData logData, Optional<Object> extraLog, NamingControl namingControl) {
+        // Pre-populate from LogData (service, timestamp, traceId, etc.)
+        // extraLog contains the typed input object (e.g., a protobuf message) if available
+    }
+
+    @Override
+    public void complete(SourceReceiver sourceReceiver) {
+        // Validate, build final Source/Record, and dispatch
     }
 }
 ```
+
+2. Register it as a `ServiceLoader` provider so the short name can be used in YAML config.
+   Create `META-INF/services/org.apache.skywalking.oap.server.core.source.LALOutputBuilder` containing:
+   ```
+   com.example.MyCustomBuilder
+   ```
+
+3. Reference it in your LAL YAML config by short name:
+
+```yaml
+rules:
+  - name: my-custom-rule
+    layer: GENERAL
+    outputType: MyCustom    # short name from name() method
+    dsl: |
+      filter {
+        json {}
+        extractor {
+          myField parsed.someField as String
+          myMetric parsed.someValue as Long
+        }
+        sink {}
+      }
+```
+
+The LAL compiler validates at boot time that `setMyField(String)` and `setMyMetric(Long)` exist on `MyCustomBuilder`.
+Fully qualified class names (e.g., `outputType: com.example.MyCustomBuilder`) are also supported as a fallback.
+
+#### Approach 2: Extend `AbstractLog`
+
+Use this for simpler cases where you want to produce a log-like record with additional fields:
+
+1. Create a subclass of `AbstractLog` with the extra fields.
+2. Set `outputType` to your subclass. Standard log fields are populated automatically.
+
+#### Custom input types
+
+For rules that receive structured protobuf data (not JSON/YAML log bodies), you can configure the input type
+so that `parsed.*` generates optimized direct getter calls:
+
+```yaml
+rules:
+  - name: my-proto-rule
+    layer: MY_LAYER
+    inputType: com.example.MyProtoMessage
+    dsl: |
+      filter {
+        extractor {
+          service parsed.serviceName as String
+          endpoint parsed.requestPath as String
+        }
+      }
+```
+
+Alternatively, register a `LALSourceTypeProvider` SPI implementation to set the default input and output types
+for an entire layer, so individual rules don't need to repeat the configuration:
+
+```java
+public class MyLayerSourceTypeProvider implements LALSourceTypeProvider {
+    @Override
+    public Layer layer() { return Layer.MY_LAYER; }
+
+    @Override
+    public Class<?> inputType() { return MyProtoMessage.class; }
+
+    @Override
+    public Class<? extends Source> outputType() { return MyCustomBuilder.class; }
+}
+```
+
+Register it in `META-INF/services/org.apache.skywalking.oap.log.analyzer.v2.spi.LALSourceTypeProvider`.
+-->

@@ -20,11 +20,19 @@ package org.apache.skywalking.oap.server.core.alarm.provider;
 
 import java.io.FileNotFoundException;
 import java.io.Reader;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+import lombok.Getter;
 import org.apache.skywalking.oap.server.configuration.api.ConfigurationModule;
 import org.apache.skywalking.oap.server.configuration.api.DynamicConfigurationService;
 import org.apache.skywalking.oap.server.core.CoreModule;
+import org.apache.skywalking.oap.server.core.alarm.AlarmHttpDeliveryMetrics;
+import org.apache.skywalking.oap.server.core.alarm.AlarmKernelService;
 import org.apache.skywalking.oap.server.core.alarm.AlarmModule;
+import org.apache.skywalking.oap.server.core.alarm.AlarmRulesWatcherService;
 import org.apache.skywalking.oap.server.core.alarm.AlarmStandardPersistence;
+import org.apache.skywalking.oap.server.core.alarm.AlarmStatusWatcherService;
+import org.apache.skywalking.oap.server.core.alarm.HttpAlarmCallback;
 import org.apache.skywalking.oap.server.core.alarm.MetricsNotify;
 import org.apache.skywalking.oap.server.library.module.ModuleConfig;
 import org.apache.skywalking.oap.server.library.module.ModuleDefine;
@@ -32,11 +40,16 @@ import org.apache.skywalking.oap.server.library.module.ModuleProvider;
 import org.apache.skywalking.oap.server.library.module.ModuleStartException;
 import org.apache.skywalking.oap.server.library.module.ServiceNotProvidedException;
 import org.apache.skywalking.oap.server.library.util.ResourceUtils;
+import org.apache.skywalking.oap.server.telemetry.TelemetryModule;
+import org.apache.skywalking.oap.server.telemetry.api.MetricsCreator;
 
 public class AlarmModuleProvider extends ModuleProvider {
+    private static final long MAX_HTTP_TIMEOUT_SECONDS = TimeUnit.NANOSECONDS.toSeconds(Long.MAX_VALUE);
 
     private NotifyHandler notifyHandler;
+    @Getter
     private AlarmRulesWatcher alarmRulesWatcher;
+    private AlarmModuleConfig moduleConfig = new AlarmModuleConfig();
 
     @Override
     public String name() {
@@ -49,26 +62,33 @@ public class AlarmModuleProvider extends ModuleProvider {
     }
 
     @Override
-    public ModuleConfig createConfigBeanIfAbsent() {
-        return new AlarmSettings();
+    public ConfigCreator<? extends ModuleConfig> newConfigCreator() {
+        return new ConfigCreator<AlarmModuleConfig>() {
+            @Override
+            public Class<AlarmModuleConfig> type() {
+                return AlarmModuleConfig.class;
+            }
+
+            @Override
+            public void onInitialized(final AlarmModuleConfig initialized) {
+                moduleConfig = initialized;
+            }
+        };
     }
 
     @Override
     public void prepare() throws ServiceNotProvidedException, ModuleStartException {
-        Reader applicationReader;
-        try {
-            applicationReader = ResourceUtils.read("alarm-settings.yml");
-        } catch (FileNotFoundException e) {
-            throw new ModuleStartException("can't load alarm-settings.yml", e);
-        }
-        RulesReader reader = new RulesReader(applicationReader);
-        Rules rules = reader.readRules();
-
-        alarmRulesWatcher = new AlarmRulesWatcher(rules, this);
-
-        notifyHandler = new NotifyHandler(alarmRulesWatcher);
-        notifyHandler.init(new AlarmStandardPersistence());
+        alarmRulesWatcher = new AlarmRulesWatcher(new Rules(), this, getManager());
+        final Duration httpTimeout = httpTimeout(moduleConfig.getHttpTimeout());
+        final long grpcTimeoutSeconds = grpcTimeout(moduleConfig.getGrpcTimeout());
+        notifyHandler = new NotifyHandler(
+            alarmRulesWatcher, getManager(), HttpAlarmCallback.newHttpClient(httpTimeout), httpTimeout,
+            grpcTimeoutSeconds);
         this.registerServiceImplementation(MetricsNotify.class, notifyHandler);
+        this.registerServiceImplementation(AlarmRulesWatcherService.class, alarmRulesWatcher);
+        this.registerServiceImplementation(AlarmStatusWatcherService.class, new AlarmStatusWatcher(getManager()));
+        this.registerServiceImplementation(AlarmKernelService.class,
+            new AlarmKernel(alarmRulesWatcher));
     }
 
     @Override
@@ -82,13 +102,52 @@ public class AlarmModuleProvider extends ModuleProvider {
 
     @Override
     public void notifyAfterCompleted() throws ServiceNotProvidedException, ModuleStartException {
+        Reader applicationReader;
+        try {
+            applicationReader = ResourceUtils.read("alarm-settings.yml");
+        } catch (FileNotFoundException e) {
+            throw new ModuleStartException("can't load alarm-settings.yml", e);
+        }
+        RulesReader reader = new RulesReader(applicationReader, getManager());
+        Rules rules = reader.readRules();
+        alarmRulesWatcher.initConfig(rules);
+        // Bind once, immediately before hooks are built in init().
+        bindDeliveryMetrics();
+        notifyHandler.init(new AlarmStandardPersistence(getManager()));
+    }
+
+    private void bindDeliveryMetrics() {
+        final MetricsCreator metricsCreator = getManager().find(TelemetryModule.NAME)
+                                                          .provider()
+                                                          .getService(MetricsCreator.class);
+        notifyHandler.setDeliveryMetrics(new AlarmHttpDeliveryMetrics(metricsCreator));
+    }
+
+    /**
+     * The cap keeps the JDK's own timer arithmetic from overflowing: {@code Long.MAX_VALUE} seconds is accepted by
+     * {@code HttpRequest.Builder#timeout} and then fails every send with an {@link ArithmeticException}.
+     */
+    static Duration httpTimeout(final long seconds) {
+        if (seconds <= 0) {
+            return Duration.ofSeconds(AlarmModuleConfig.DEFAULT_HTTP_TIMEOUT_SECONDS);
+        }
+        return Duration.ofSeconds(Math.min(seconds, MAX_HTTP_TIMEOUT_SECONDS));
+    }
+
+    /** {@code <= 0} → default; otherwise capped like {@link #httpTimeout(long)}. */
+    static long grpcTimeout(final long seconds) {
+        if (seconds <= 0) {
+            return AlarmModuleConfig.DEFAULT_GRPC_TIMEOUT_SECONDS;
+        }
+        return Math.min(seconds, MAX_HTTP_TIMEOUT_SECONDS);
     }
 
     @Override
     public String[] requiredModules() {
         return new String[] {
             CoreModule.NAME,
-            ConfigurationModule.NAME
+            ConfigurationModule.NAME,
+            TelemetryModule.NAME
         };
     }
 }

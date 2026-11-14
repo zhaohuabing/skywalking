@@ -26,13 +26,13 @@ public class ModuleBProvider extends ModuleProvider {
     }
 
     @Override
-    public ModuleConfig createConfigBeanIfAbsent() {
-        return null;
+    public Class<? extends ModuleDefine> module() {
+        return BaseModuleB.class;
     }
 
     @Override
-    public Class<? extends ModuleDefine> module() {
-        return BaseModuleB.class;
+    public ConfigCreator newConfigCreator() {
+        return null;
     }
 
     @Override
@@ -47,6 +47,12 @@ public class ModuleBProvider extends ModuleProvider {
 
     @Override
     public void notifyAfterCompleted() {
+        BootPhaseLog.record("P-B:afterCompleted");
+    }
+
+    @Override
+    public void notifyBootCompleted() {
+        BootPhaseLog.record("P-B:bootCompleted");
     }
 
     @Override

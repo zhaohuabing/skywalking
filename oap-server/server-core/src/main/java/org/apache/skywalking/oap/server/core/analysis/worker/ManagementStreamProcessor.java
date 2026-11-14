@@ -18,9 +18,6 @@
 
 package org.apache.skywalking.oap.server.core.analysis.worker;
 
-import java.lang.reflect.InvocationTargetException;
-import java.util.HashMap;
-import java.util.Map;
 import org.apache.skywalking.oap.server.core.CoreModule;
 import org.apache.skywalking.oap.server.core.UnexpectedException;
 import org.apache.skywalking.oap.server.core.analysis.DownSampling;
@@ -34,13 +31,18 @@ import org.apache.skywalking.oap.server.core.storage.StorageException;
 import org.apache.skywalking.oap.server.core.storage.StorageModule;
 import org.apache.skywalking.oap.server.core.storage.annotation.Storage;
 import org.apache.skywalking.oap.server.core.storage.model.Model;
-import org.apache.skywalking.oap.server.core.storage.model.ModelCreator;
+import org.apache.skywalking.oap.server.core.storage.model.ModelRegistry;
+import org.apache.skywalking.oap.server.core.storage.model.StorageManipulationOpt;
 import org.apache.skywalking.oap.server.core.storage.type.StorageBuilder;
 import org.apache.skywalking.oap.server.library.module.ModuleDefineHolder;
 
+import java.lang.reflect.InvocationTargetException;
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * ManagementProcessor represents the UI/CLI interactive process. They are management data, which size is not huge and
- * time serious.
+ * time series.
  *
  * @since 8.0.0
  */
@@ -60,7 +62,6 @@ public class ManagementStreamProcessor implements StreamProcessor<ManagementData
         }
     }
 
-    @Override
     public void create(final ModuleDefineHolder moduleDefineHolder, final Stream stream, final Class<? extends ManagementData> streamClass) throws StorageException {
         final StorageBuilderFactory storageBuilderFactory = moduleDefineHolder.find(StorageModule.NAME)
                                                                               .provider()
@@ -76,8 +77,11 @@ public class ManagementStreamProcessor implements StreamProcessor<ManagementData
                     .getSimpleName() + " none stream record DAO failure.", e);
         }
 
-        ModelCreator modelSetter = moduleDefineHolder.find(CoreModule.NAME).provider().getService(ModelCreator.class);
-        Model model = modelSetter.add(streamClass, stream.scopeId(), new Storage(stream.name(), DownSampling.None), false);
+        ModelRegistry modelSetter = moduleDefineHolder.find(CoreModule.NAME).provider().getService(ModelRegistry.class);
+        // Management stream doesn't read data from database during the persistent process. Keep the timeRelativeID == false always.
+        Model model = modelSetter.add(streamClass, stream.scopeId(),
+            new Storage(stream.name(), false, DownSampling.None),
+            StorageManipulationOpt.schemaCreateIfAbsent());
 
         final ManagementPersistentWorker persistentWorker = new ManagementPersistentWorker(moduleDefineHolder, model, managementDAO);
         workers.put(streamClass, persistentWorker);

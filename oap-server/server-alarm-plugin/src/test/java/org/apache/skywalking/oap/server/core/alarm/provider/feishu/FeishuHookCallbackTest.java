@@ -20,192 +20,182 @@ package org.apache.skywalking.oap.server.core.alarm.provider.feishu;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import org.apache.skywalking.apm.util.StringUtil;
+import com.linecorp.armeria.common.HttpResponse;
+import com.linecorp.armeria.common.HttpStatus;
+import com.linecorp.armeria.server.ServerBuilder;
+import com.linecorp.armeria.testing.junit5.server.ServerExtension;
+import org.apache.skywalking.oap.server.core.alarm.AlarmHttpDeliveryMetrics;
 import org.apache.skywalking.oap.server.core.alarm.AlarmMessage;
+import org.apache.skywalking.oap.server.core.alarm.provider.AlarmHooksType;
 import org.apache.skywalking.oap.server.core.alarm.provider.AlarmRulesWatcher;
 import org.apache.skywalking.oap.server.core.alarm.provider.Rules;
 import org.apache.skywalking.oap.server.core.source.DefaultScopeDefine;
-import org.eclipse.jetty.server.Server;
-import org.eclipse.jetty.servlet.ServletContextHandler;
-import org.eclipse.jetty.servlet.ServletHolder;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
+import org.apache.skywalking.oap.server.telemetry.none.MetricsCreatorNoop;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.RegisterExtension;
 
-import javax.servlet.Servlet;
-import javax.servlet.ServletConfig;
-import javax.servlet.ServletException;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.InetSocketAddress;
+import java.net.http.HttpClient;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.Assert.assertTrue;
-
-public class FeishuHookCallbackTest implements Servlet {
-
-    private Server server;
-    private int port;
-    private volatile boolean isSuccess = false;
-    private int count;
-    private volatile boolean checkSign = false;
+public class FeishuHookCallbackTest {
+    private static final AtomicBoolean IS_SUCCESS = new AtomicBoolean();
+    private static final AtomicBoolean CHECK_SIGN = new AtomicBoolean();
+    private static final AtomicInteger COUNT = new AtomicInteger();
     private final String secret = "dummy-secret";
 
-    @Before
-    public void init() throws Exception {
-        server = new Server(new InetSocketAddress("127.0.0.1", 0));
-        ServletContextHandler servletContextHandler = new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
-        servletContextHandler.setContextPath("/feishuhook");
-        server.setHandler(servletContextHandler);
-        ServletHolder servletHolder = new ServletHolder();
-        servletHolder.setServlet(this);
-        servletContextHandler.addServlet(servletHolder, "/receiveAlarm");
-        server.start();
-        port = server.getURI().getPort();
-        assertTrue(port > 0);
-    }
+    @RegisterExtension
+    public static final ServerExtension SERVER = new ServerExtension() {
+        @Override
+        protected void configure(ServerBuilder sb) {
+            sb.service("/feishuhook/receiveAlarm", (ctx, req) -> HttpResponse.from(
+                req.aggregate().thenApply(r -> {
+                    final String content = r.content().toStringUtf8();
+                    final JsonObject jsonObject = new Gson().fromJson(content, JsonObject.class);
+                    final String type = jsonObject.get("msg_type").getAsString();
+                    if (CHECK_SIGN.get()) {
+                        String timestamp = jsonObject.get("timestamp").getAsString();
+                        String sign = jsonObject.get("sign").getAsString();
+                        if (StringUtil.isEmpty(timestamp) || StringUtil.isEmpty(sign)) {
+                            return HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR);
+                        }
+                    }
+                    if (type.equalsIgnoreCase("text")) {
+                        COUNT.incrementAndGet();
+                        if (COUNT.get() == 2) {
+                            IS_SUCCESS.set(true);
+                        }
+                        return HttpResponse.of(HttpStatus.OK);
+                    }
+                    return HttpResponse.of(HttpStatus.INTERNAL_SERVER_ERROR);
+                })));
+        }
+    };
 
     @Test
-    public void testFeishuWebhookWithoutSign() {
+    public void testFeishuWebhookWithoutSign() throws Exception {
         List<FeishuSettings.WebHookUrl> webHooks = new ArrayList<>();
-        webHooks.add(new FeishuSettings.WebHookUrl("", "http://127.0.0.1:" + port + "/feishuhook/receiveAlarm?token=dummy_token"));
+        webHooks.add(new FeishuSettings.WebHookUrl("", "http://127.0.0.1:" + SERVER.httpPort() + "/feishuhook/receiveAlarm?token=dummy_token"));
         Rules rules = new Rules();
         String template = "{\"msg_type\":\"text\",\"content\":{\"text\":\"Skywaling alarm: %s\"}}";
-        rules.setFeishus(FeishuSettings.builder().webhooks(webHooks).textTemplate(template).build());
+        FeishuSettings setting1 = new FeishuSettings("setting1", AlarmHooksType.feishu, true);
+        setting1.setWebhooks(webHooks);
+        setting1.setTextTemplate(template);
+        FeishuSettings setting2 = new FeishuSettings("setting2", AlarmHooksType.feishu, false);
+        setting2.setWebhooks(webHooks);
+        setting2.setTextTemplate(template);
+        rules.getFeishuSettingsMap().put(setting1.getFormattedName(), setting1);
+        rules.getFeishuSettingsMap().put(setting2.getFormattedName(), setting2);
 
-        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null);
-        FeishuHookCallback feishuHookCallback = new FeishuHookCallback(alarmRulesWatcher);
+        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null, null);
+        FeishuHookCallback feishuHookCallback = new FeishuHookCallback(alarmRulesWatcher, HttpClient.newHttpClient(), Duration.ofSeconds(12), new AlarmHttpDeliveryMetrics(new MetricsCreatorNoop()));
         List<AlarmMessage> alarmMessages = new ArrayList<>(2);
         AlarmMessage alarmMessage = new AlarmMessage();
-        alarmMessage.setScopeId(DefaultScopeDefine.ALL);
+        alarmMessage.setScopeId(DefaultScopeDefine.SERVICE);
         alarmMessage.setRuleName("service_resp_time_rule");
         alarmMessage.setAlarmMessage("alarmMessage with [DefaultScopeDefine.All]");
+        alarmMessage.getHooks().add(setting1.getFormattedName());
         alarmMessages.add(alarmMessage);
         AlarmMessage anotherAlarmMessage = new AlarmMessage();
         anotherAlarmMessage.setRuleName("service_resp_time_rule_2");
         anotherAlarmMessage.setScopeId(DefaultScopeDefine.ENDPOINT);
         anotherAlarmMessage.setAlarmMessage("anotherAlarmMessage with [DefaultScopeDefine.Endpoint]");
+        anotherAlarmMessage.getHooks().add(setting2.getFormattedName());
         alarmMessages.add(anotherAlarmMessage);
         feishuHookCallback.doAlarm(alarmMessages);
-        Assert.assertTrue(isSuccess);
+        Assertions.assertTrue(IS_SUCCESS.get());
     }
 
     @Test
-    public void testFeishuWebhookWithSign() {
-        checkSign = true;
+    public void testFeishuWebhookWithSign() throws Exception {
+        CHECK_SIGN.set(true);
         List<FeishuSettings.WebHookUrl> webHooks = new ArrayList<>();
-        webHooks.add(new FeishuSettings.WebHookUrl(secret, "http://127.0.0.1:" + port + "/feishuhook/receiveAlarm?token=dummy_token"));
+        webHooks.add(new FeishuSettings.WebHookUrl(secret, "http://127.0.0.1:" + SERVER.httpPort() + "/feishuhook/receiveAlarm?token=dummy_token"));
         Rules rules = new Rules();
         String template = "{\"msg_type\":\"text\",\"content\":{\"text\":\"Skywaling alarm: %s\"}}";
-        rules.setFeishus(FeishuSettings.builder().webhooks(webHooks).textTemplate(template).build());
+        FeishuSettings setting1 = new FeishuSettings("setting1", AlarmHooksType.feishu, true);
+        setting1.setWebhooks(webHooks);
+        setting1.setTextTemplate(template);
+        FeishuSettings setting2 = new FeishuSettings("setting2", AlarmHooksType.feishu, false);
+        setting2.setWebhooks(webHooks);
+        setting2.setTextTemplate(template);
+        rules.getFeishuSettingsMap().put(setting1.getFormattedName(), setting1);
+        rules.getFeishuSettingsMap().put(setting2.getFormattedName(), setting2);
 
-        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null);
-        FeishuHookCallback feishuHookCallback = new FeishuHookCallback(alarmRulesWatcher);
+        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null, null);
+        FeishuHookCallback feishuHookCallback = new FeishuHookCallback(alarmRulesWatcher, HttpClient.newHttpClient(), Duration.ofSeconds(12), new AlarmHttpDeliveryMetrics(new MetricsCreatorNoop()));
         List<AlarmMessage> alarmMessages = new ArrayList<>(2);
         AlarmMessage alarmMessage = new AlarmMessage();
-        alarmMessage.setScopeId(DefaultScopeDefine.ALL);
+        alarmMessage.setScopeId(DefaultScopeDefine.SERVICE);
         alarmMessage.setRuleName("service_resp_time_rule");
         alarmMessage.setAlarmMessage("alarmMessage with [DefaultScopeDefine.All]");
+        alarmMessage.getHooks().add(setting1.getFormattedName());
         alarmMessages.add(alarmMessage);
         AlarmMessage anotherAlarmMessage = new AlarmMessage();
         anotherAlarmMessage.setRuleName("service_resp_time_rule_2");
         anotherAlarmMessage.setScopeId(DefaultScopeDefine.ENDPOINT);
         anotherAlarmMessage.setAlarmMessage("anotherAlarmMessage with [DefaultScopeDefine.Endpoint]");
+        anotherAlarmMessage.getHooks().add(setting2.getFormattedName());
         alarmMessages.add(anotherAlarmMessage);
         feishuHookCallback.doAlarm(alarmMessages);
-        Assert.assertTrue(isSuccess);
+        Assertions.assertTrue(IS_SUCCESS.get());
     }
 
     @Test
-    public void testFeishuWebhookWithSignAndAt() {
-        checkSign = true;
+    public void testFeishuWebhookWithSignAndAt() throws Exception {
+        CHECK_SIGN.set(true);
         List<FeishuSettings.WebHookUrl> webHooks = new ArrayList<>();
-        webHooks.add(new FeishuSettings.WebHookUrl(secret, "http://127.0.0.1:" + port + "/feishuhook/receiveAlarm?token=dummy_token"));
+        webHooks.add(new FeishuSettings.WebHookUrl(secret, "http://127.0.0.1:" + SERVER.httpPort() + "/feishuhook/receiveAlarm?token=dummy_token"));
         Rules rules = new Rules();
         String template = "{\"msg_type\":\"text\",\"content\":{\"text\":\"Skywaling alarm: %s\"},\"ats\":\"123\"}";
-        rules.setFeishus(FeishuSettings.builder().webhooks(webHooks).textTemplate(template).build());
+        FeishuSettings setting1 = new FeishuSettings("setting1", AlarmHooksType.feishu, true);
+        setting1.setWebhooks(webHooks);
+        setting1.setTextTemplate(template);
+        FeishuSettings setting2 = new FeishuSettings("setting2", AlarmHooksType.feishu, false);
+        setting2.setWebhooks(webHooks);
+        setting2.setTextTemplate(template);
+        rules.getFeishuSettingsMap().put(setting1.getFormattedName(), setting1);
+        rules.getFeishuSettingsMap().put(setting2.getFormattedName(), setting2);
 
-        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null);
-        FeishuHookCallback feishuHookCallback = new FeishuHookCallback(alarmRulesWatcher);
+        AlarmRulesWatcher alarmRulesWatcher = new AlarmRulesWatcher(rules, null, null);
+        FeishuHookCallback feishuHookCallback = new FeishuHookCallback(alarmRulesWatcher, HttpClient.newHttpClient(), Duration.ofSeconds(12), new AlarmHttpDeliveryMetrics(new MetricsCreatorNoop()));
         List<AlarmMessage> alarmMessages = new ArrayList<>(2);
         AlarmMessage alarmMessage = new AlarmMessage();
-        alarmMessage.setScopeId(DefaultScopeDefine.ALL);
+        alarmMessage.setScopeId(DefaultScopeDefine.SERVICE);
         alarmMessage.setRuleName("service_resp_time_rule");
         alarmMessage.setAlarmMessage("alarmMessage with [DefaultScopeDefine.All]");
+        alarmMessage.getHooks().add(setting1.getFormattedName());
         alarmMessages.add(alarmMessage);
         AlarmMessage anotherAlarmMessage = new AlarmMessage();
         anotherAlarmMessage.setRuleName("service_resp_time_rule_2");
         anotherAlarmMessage.setScopeId(DefaultScopeDefine.ENDPOINT);
         anotherAlarmMessage.setAlarmMessage("anotherAlarmMessage with [DefaultScopeDefine.Endpoint]");
+        anotherAlarmMessage.getHooks().add(setting2.getFormattedName());
         alarmMessages.add(anotherAlarmMessage);
         feishuHookCallback.doAlarm(alarmMessages);
-        Assert.assertTrue(isSuccess);
+        Assertions.assertTrue(IS_SUCCESS.get());
     }
 
-    @After
-    public void stop() throws Exception {
-        server.stop();
+    @Test
+    public void errorCodesInAcceptedBodyAreClassified() {
+        final FeishuHookCallback callback = new FeishuHookCallback(
+            new AlarmRulesWatcher(new Rules(), null, null), HttpClient.newHttpClient(), Duration.ofSeconds(12),
+            new AlarmHttpDeliveryMetrics(new MetricsCreatorNoop()));
+
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_SUCCESS, callback.classifyAcceptedBody(
+            "{\"StatusCode\":0,\"StatusMessage\":\"success\",\"code\":0,\"data\":{},\"msg\":\"success\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED, callback.classifyAcceptedBody(
+            "{\"code\":19021,\"msg\":\"sign match fail or timestamp is not within one hour from current time\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_AUTH_FAILED, callback.classifyAcceptedBody(
+            "{\"code\":19022,\"msg\":\"Ip Not Allowed\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_RATE_LIMITED, callback.classifyAcceptedBody(
+            "{\"code\":11232,\"msg\":\"create message service trigger rate limit\"}"));
+        Assertions.assertEquals(AlarmHttpDeliveryMetrics.RESULT_REJECTED, callback.classifyAcceptedBody(
+            "{\"code\":19024,\"msg\":\"Key Words Not Found\"}"));
     }
-
-    @Override
-    public void init(ServletConfig servletConfig) throws ServletException {
-    }
-
-    @Override
-    public ServletConfig getServletConfig() {
-        return null;
-    }
-
-    @Override
-    public void service(ServletRequest request, ServletResponse response) throws ServletException, IOException {
-        HttpServletRequest httpServletRequest = (HttpServletRequest) request;
-        if (httpServletRequest.getContentType().equals("application/json")) {
-            InputStream inputStream = request.getInputStream();
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            byte[] buffer = new byte[2048];
-            int readCntOnce;
-
-            while ((readCntOnce = inputStream.read(buffer)) >= 0) {
-                out.write(buffer, 0, readCntOnce);
-            }
-
-            JsonObject jsonObject = new Gson().fromJson(new String(out.toByteArray()), JsonObject.class);
-            String type = jsonObject.get("msg_type").getAsString();
-            if (checkSign) {
-                String timestamp = jsonObject.get("timestamp").getAsString();
-                String sign = jsonObject.get("sign").getAsString();
-                if (StringUtil.isEmpty(timestamp) || StringUtil.isEmpty(sign)) {
-                    ((HttpServletResponse) response).setStatus(500);
-                    return;
-                }
-            }
-            if (type.equalsIgnoreCase("text")) {
-                ((HttpServletResponse) response).setStatus(200);
-                count = count + 1;
-                if (count == 2) {
-                    isSuccess = true;
-                }
-                return;
-            }
-
-            ((HttpServletResponse) response).setStatus(500);
-        }
-    }
-
-    @Override
-    public String getServletInfo() {
-        return null;
-    }
-
-    @Override
-    public void destroy() {
-    }
-
 }

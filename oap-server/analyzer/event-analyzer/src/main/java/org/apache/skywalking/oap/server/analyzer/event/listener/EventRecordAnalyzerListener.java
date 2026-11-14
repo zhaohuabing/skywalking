@@ -19,14 +19,15 @@
 package org.apache.skywalking.oap.server.analyzer.event.listener;
 
 import com.google.gson.Gson;
-import lombok.RequiredArgsConstructor;
 import org.apache.skywalking.apm.network.event.v3.Source;
 import org.apache.skywalking.oap.server.core.CoreModule;
+import org.apache.skywalking.oap.server.core.analysis.Layer;
 import org.apache.skywalking.oap.server.core.analysis.TimeBucket;
-import org.apache.skywalking.oap.server.core.analysis.worker.MetricsStreamProcessor;
+import org.apache.skywalking.oap.server.core.analysis.worker.RecordStreamProcessor;
 import org.apache.skywalking.oap.server.core.config.NamingControl;
-import org.apache.skywalking.oap.server.core.event.Event;
+import org.apache.skywalking.oap.server.core.analysis.record.Event;
 import org.apache.skywalking.oap.server.library.module.ModuleManager;
+import lombok.RequiredArgsConstructor;
 
 /**
  * EventRecordAnalyzerListener forwards the event data to the persistence layer with the query required conditions.
@@ -41,11 +42,13 @@ public class EventRecordAnalyzerListener implements EventAnalyzerListener {
 
     @Override
     public void build() {
-        MetricsStreamProcessor.getInstance().in(event);
+        RecordStreamProcessor.getInstance().in(event);
     }
 
     @Override
     public void parse(final org.apache.skywalking.apm.network.event.v3.Event e) {
+        event.setLayer(Layer.nameOf(e.getLayer()));
+
         event.setUuid(e.getUuid());
 
         if (e.hasSource()) {
@@ -64,9 +67,11 @@ public class EventRecordAnalyzerListener implements EventAnalyzerListener {
         event.setStartTime(e.getStartTime());
         event.setEndTime(e.getEndTime());
         if (e.getStartTime() > 0) {
-            event.setTimeBucket(TimeBucket.getMinuteTimeBucket(e.getStartTime()));
+            event.setTimeBucket(TimeBucket.getRecordTimeBucket(e.getStartTime()));
+            event.setTimestamp(e.getStartTime());
         } else if (e.getEndTime() > 0) {
-            event.setTimeBucket(TimeBucket.getMinuteTimeBucket(e.getEndTime()));
+            event.setTimeBucket(TimeBucket.getRecordTimeBucket(e.getEndTime()));
+            event.setTimestamp(e.getEndTime());
         }
     }
 

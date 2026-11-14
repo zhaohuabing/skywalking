@@ -1,21 +1,26 @@
 # Health Check
 
-Health check intends to provide a unique approach to check the healthy status of OAP server. It includes the health status
-of modules, GraphQL and gRPC services readiness.
+Health check intends to provide a unique approach to checking the health status of the OAP server. It includes the health status
+of modules, GraphQL, and gRPC services readiness.
+
+> 0 means healthy, and more than 0 means unhealthy.
+> less than 0 means that the OAP doesn't start up.
 
 ## Health Checker Module.
 
-Health Checker module could solute how to observe the health status of modules. We can active it by below:
+The Health Checker module helps observe the health status of modules. You may activate it as follows:
 ```yaml
 health-checker:
   selector: ${SW_HEALTH_CHECKER:default}
   default:
     checkIntervalSeconds: ${SW_HEALTH_CHECKER_INTERVAL_SECONDS:5}
 ```
-Notice, we should enable `telemetry` module at the same time. That means the provider should not be `-` and `none`.
+Note: The `telemetry` module should be enabled at the same time. This means that the provider should not be `-` and `none`.
 
-After that, we can query OAP server health status by querying GraphQL:
+After that, we can check the OAP server health status by querying the http endpoint: `/healthcheck`,
+see [the health check http endpoint doc](../../api/health-check.md).
 
+You can also query the healthiness via other methods like GraphQL, see following.
 ```
 query{
   checkHealth{
@@ -38,7 +43,7 @@ If the OAP server is healthy, the response should be
 }
 ```
 
-Once some modules are unhealthy, for instance, storage H2 is down. The result might be like below:
+If some modules are unhealthy (e.g. storage H2 is down), then the result may look as follows:
 
 ```json
 {
@@ -50,16 +55,43 @@ Once some modules are unhealthy, for instance, storage H2 is down. The result mi
   }
 }
 ```
-You could refer to [checkHealth query](https://github.com/apache/skywalking-query-protocol/blob/master/common.graphqls)
+Refer to [checkHealth query](https://github.com/apache/skywalking-query-protocol/blob/master/common.graphqls)
 for more details.
 
 ## The readiness of GraphQL and gRPC
 
-We could opt to above query to check the readiness of GraphQL.
+Use the query above to check the readiness of GraphQL.
 
-OAP has implemented [gRPC Health Checking Protocol](https://github.com/grpc/grpc/blob/master/doc/health-checking.md).
-We could use [grpc-health-probe](https://github.com/grpc-ecosystem/grpc-health-probe) or any other tools to check the
+OAP has implemented the [gRPC Health Checking Protocol](https://github.com/grpc/grpc/blob/master/doc/health-checking.md).
+You may use the [grpc-health-probe](https://github.com/grpc-ecosystem/grpc-health-probe) or any other tools to check the
 health of OAP gRPC services.
 
 ## CLI tool
-Please follow the [CLI doc](https://github.com/apache/skywalking-cli#checkhealth) to get the health status score directly through the `checkhealth` command.
+
+The `swctl` CLI ships a `health` subcommand that runs the GraphQL `checkHealth`
+query (and, by default, the gRPC `HealthCheck` service) and exits with a
+non-zero status when the OAP is unhealthy.
+
+```bash
+# Plain gRPC
+swctl --base-url=http://OAP:12800/graphql health
+
+# OAP gRPC with TLS (cert verification is intentionally skipped)
+swctl --base-url=http://OAP:12800/graphql health --grpcTLS=true
+```
+
+### Reading the response
+
+A healthy OAP returns the same `score: 0` envelope shown in the GraphQL
+section above and the process exits 0. A failing run prints the GraphQL /
+gRPC error and exits non-zero — straightforward to wire into a shell readiness
+loop:
+
+```bash
+if swctl --base-url=http://OAP:12800/graphql health >/dev/null 2>&1; then
+  echo "OAP healthy"
+else
+  echo "OAP not healthy"
+  exit 1
+fi
+```

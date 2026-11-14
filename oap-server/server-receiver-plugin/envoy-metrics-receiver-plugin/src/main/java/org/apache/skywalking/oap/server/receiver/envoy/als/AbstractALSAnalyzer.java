@@ -18,40 +18,20 @@
 
 package org.apache.skywalking.oap.server.receiver.envoy.als;
 
-import io.envoyproxy.envoy.config.core.v3.Node;
 import io.envoyproxy.envoy.data.accesslog.v3.HTTPAccessLogEntry;
-import io.envoyproxy.envoy.service.accesslog.v3.StreamAccessLogsMessage;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.skywalking.apm.network.servicemesh.v3.ServiceMeshMetric;
+import org.apache.skywalking.apm.network.servicemesh.v3.HTTPServiceMeshMetric;
 
 @Slf4j
 public abstract class AbstractALSAnalyzer implements ALSHTTPAnalysis {
 
-    @Override
-    public Role identify(final StreamAccessLogsMessage.Identifier alsIdentifier, final Role defaultRole) {
-        if (alsIdentifier == null) {
-            return defaultRole;
-        }
-        if (!alsIdentifier.hasNode()) {
-            return defaultRole;
-        }
-        final Node node = alsIdentifier.getNode();
-        final String id = node.getId();
-        if (id.startsWith("router~")) {
-            return Role.PROXY;
-        } else if (id.startsWith("sidecar~")) {
-            return Role.SIDECAR;
-        }
-        return defaultRole;
-    }
-
     /**
-     * Create an adapter to adapt the {@link HTTPAccessLogEntry log entry} into a {@link ServiceMeshMetric.Builder}.
+     * Create an adapter to adapt the {@link HTTPAccessLogEntry log entry} into a {@link HTTPServiceMeshMetric.Builder}.
      *
      * @param entry         the access log entry that is to be adapted from.
      * @param sourceService the source service.
      * @param targetService the target/destination service.
-     * @return an adapter that adapts {@link HTTPAccessLogEntry log entry} into a {@link ServiceMeshMetric.Builder}.
+     * @return an adapter that adapts {@link HTTPAccessLogEntry log entry} into a {@link HTTPServiceMeshMetric.Builder}.
      */
     protected LogEntry2MetricsAdapter newAdapter(
         final HTTPAccessLogEntry entry,

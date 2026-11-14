@@ -17,13 +17,15 @@
 
 package org.apache.skywalking.oap.server.core.analysis.metrics;
 
+import com.google.gson.JsonObject;
 import lombok.Getter;
 import lombok.Setter;
 import org.apache.skywalking.oap.server.core.analysis.metrics.annotation.Entrance;
 import org.apache.skywalking.oap.server.core.analysis.metrics.annotation.Expression;
 import org.apache.skywalking.oap.server.core.analysis.metrics.annotation.MetricsFunction;
-import org.apache.skywalking.oap.server.core.query.sql.Function;
+import org.apache.skywalking.oap.server.core.storage.annotation.BanyanDB;
 import org.apache.skywalking.oap.server.core.storage.annotation.Column;
+import org.apache.skywalking.oap.server.core.storage.annotation.ElasticSearch;
 
 @MetricsFunction(functionName = "rate")
 public abstract class RateMetrics extends Metrics implements IntValueHolder {
@@ -33,15 +35,19 @@ public abstract class RateMetrics extends Metrics implements IntValueHolder {
 
     @Getter
     @Setter
-    @Column(columnName = DENOMINATOR)
+    @Column(name = DENOMINATOR)
+    @BanyanDB.MeasureField
     private long denominator;
     @Getter
     @Setter
-    @Column(columnName = PERCENTAGE, dataType = Column.ValueDataType.COMMON_VALUE, function = Function.Avg)
+    @ElasticSearch.EnableDocValues
+    @Column(name = PERCENTAGE, dataType = Column.ValueDataType.COMMON_VALUE)
+    @BanyanDB.MeasureField
     private int percentage;
     @Getter
     @Setter
-    @Column(columnName = NUMERATOR)
+    @Column(name = NUMERATOR)
+    @BanyanDB.MeasureField
     private long numerator;
 
     @Entrance
@@ -72,5 +78,12 @@ public abstract class RateMetrics extends Metrics implements IntValueHolder {
     @Override
     public int getValue() {
         return percentage;
+    }
+
+    @Override
+    protected void appendDebugFields(final JsonObject obj) {
+        obj.addProperty("denominator", denominator);
+        obj.addProperty("numerator", numerator);
+        obj.addProperty("percentage", percentage);
     }
 }

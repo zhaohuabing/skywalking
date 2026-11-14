@@ -18,53 +18,114 @@
 
 package org.apache.skywalking.oap.server.receiver.otel;
 
-import java.lang.reflect.Field;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.Optional;
-import java.util.stream.Collectors;
+import com.google.common.base.Splitter;
+import com.google.common.base.Strings;
+import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.lang3.StringUtils;
-import org.apache.skywalking.apm.util.StringUtil;
+import org.apache.skywalking.oap.server.core.otlp.OTLPSpanRecord;
 import org.apache.skywalking.oap.server.library.module.ModuleConfig;
 
+import java.util.List;
+import java.util.stream.Collectors;
+
+/**
+ * The configuration of every OTLP handler. The name is historical; the trace and log handlers read it too.
+ */
 @Slf4j
 public class OtelMetricReceiverConfig extends ModuleConfig {
+    /**
+     * The value of {@link #otlpTraceStorage} that stores OTLP spans natively in {@code otlp_span}.
+     */
+    public static final String OTLP_TRACE_STORAGE_OTLP = "otlp";
+    /**
+     * The value of {@link #otlpTraceStorage} that converts OTLP spans to Zipkin spans and hands them to the Zipkin
+     * receiver, the behavior before native storage existed.
+     */
+    public static final String OTLP_TRACE_STORAGE_ZIPKIN = "zipkin";
 
+    @Setter
     private String enabledHandlers;
 
-    private String enabledOcRules;
+    @Getter
+    private String enabledOtelMetricsRules;
+
+    /**
+     * Where the {@code otlp-traces} handler stores spans, {@link #OTLP_TRACE_STORAGE_OTLP} (the default) or
+     * {@link #OTLP_TRACE_STORAGE_ZIPKIN}.
+     */
+    @Getter
+    @Setter
+    private String otlpTraceStorage = OTLP_TRACE_STORAGE_OTLP;
+
+    /**
+     * Native mode only. Attribute keys offered by tag autocomplete, each with its TraceQL scope:
+     * {@code resource.<key>} or {@code span.<key>}. Every attribute is indexed for equality search regardless of
+     * this list.
+     */
+    @Setter
+    private String otlpTraceSearchableTags;
+
+    /**
+     * Native mode only. Head sampling by trace id, precision 1/10000.
+     */
+    @Getter
+    @Setter
+    private int otlpTraceSampleRate = 10000;
+
+    /**
+     * Native mode only. Spans per second accepted before dropping; 0 means no limit.
+     */
+    @Getter
+    @Setter
+    private int otlpTraceMaxSpansPerSecond = 0;
+
+    /**
+     * Resource attribute keys, comma separated, in order of preference: the first one a resource carries groups its
+     * service, so {@code cart} with {@code service.namespace=shop} is the service {@code shop::cart} of the group
+     * {@code shop} in the trace analysis, the stored spans and the logs, while the resource attributes stay as sent.
+     * Empty, the default, groups nothing.
+     */
+    @Setter
+    private String otlpServiceGroupKeys;
+
+    public List<String> getOtlpServiceGroupKeys() {
+        return Splitter.on(",").trimResults().omitEmptyStrings().splitToList(Strings.nullToEmpty(otlpServiceGroupKeys));
+    }
 
     public List<String> getEnabledHandlers() {
-        return split(enabledHandlers);
+        return Splitter.on(",").trimResults().omitEmptyStrings().splitToList(Strings.nullToEmpty(enabledHandlers));
     }
 
-    List<String> getEnabledRulesFrom(String handler) {
-        Field f;
-        try {
-            f = this.getClass().getDeclaredField(String.format("enabled%sRules", StringUtils.capitalize(handler)));
-        } catch (NoSuchFieldException e) {
-            if (log.isDebugEnabled()) {
-                log.debug("failed to get disabled rule field of {}", handler, e);
-            }
-            return Collections.emptyList();
-        }
-        f.setAccessible(true);
-        try {
-            return  split(f.get(this));
-        } catch (IllegalAccessException e) {
-            log.warn("failed to access disabled rule list of {}", handler, e);
-            return Collections.emptyList();
-        }
+    public List<String> getOtlpTraceSearchableTags() {
+        return Splitter.on(",").trimResults().omitEmptyStrings().splitToList(Strings.nullToEmpty(otlpTraceSearchableTags));
     }
 
-    private List<String> split(Object str) {
-        return Arrays.stream(Optional.ofNullable(str).orElse("").toString()
-            .split(","))
-            .map(String::trim)
-            .filter(StringUtil::isNotEmpty)
-            .collect(Collectors.toList());
+    /**
+     * The {@link #otlpTraceSearchableTags} entries that name no scope; they would match no attribute, so the boot
+     * refuses them instead of silently leaving their dropdown empty.
+     */
+    public List<String> getUnscopedOtlpTraceSearchableTags() {
+        return getOtlpTraceSearchableTags().stream()
+                                           .filter(key -> !isScoped(key, OTLPSpanRecord.RESOURCE_TAG_PREFIX)
+                                               && !isScoped(key, OTLPSpanRecord.SPAN_TAG_PREFIX))
+                                           .collect(Collectors.toList());
     }
 
+    private static boolean isScoped(final String key, final String scopePrefix) {
+        return key.startsWith(scopePrefix) && key.length() > scopePrefix.length();
+    }
+
+    public boolean isOtlpTraceStorageNative() {
+        return OTLP_TRACE_STORAGE_OTLP.equalsIgnoreCase(Strings.nullToEmpty(otlpTraceStorage).trim());
+    }
+
+    /**
+     * Whether {@link #otlpTraceStorage} names one of the two modes; anything else is a typo that must fail the boot
+     * rather than silently select the Zipkin path.
+     */
+    public boolean isOtlpTraceStorageValid() {
+        final String storage = Strings.nullToEmpty(otlpTraceStorage).trim();
+        return OTLP_TRACE_STORAGE_OTLP.equalsIgnoreCase(storage) || OTLP_TRACE_STORAGE_ZIPKIN.equalsIgnoreCase(storage);
+    }
 }

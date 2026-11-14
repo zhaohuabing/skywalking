@@ -19,29 +19,33 @@
 package org.apache.skywalking.oap.server.storage.plugin.elasticsearch.base;
 
 import java.io.IOException;
+import java.util.Map;
+import java.util.Optional;
+
 import org.apache.skywalking.oap.server.core.analysis.record.Record;
 import org.apache.skywalking.oap.server.core.storage.IRecordDAO;
-import org.apache.skywalking.oap.server.core.storage.StorageHashMapBuilder;
 import org.apache.skywalking.oap.server.core.storage.model.Model;
+import org.apache.skywalking.oap.server.core.storage.type.StorageBuilder;
 import org.apache.skywalking.oap.server.library.client.elasticsearch.ElasticSearchClient;
 import org.apache.skywalking.oap.server.library.client.request.InsertRequest;
-import org.elasticsearch.common.xcontent.XContentBuilder;
 
 public class RecordEsDAO extends EsDAO implements IRecordDAO {
-    private final StorageHashMapBuilder<Record> storageBuilder;
+    private final StorageBuilder<Record> storageBuilder;
 
     public RecordEsDAO(ElasticSearchClient client,
-                       StorageHashMapBuilder<Record> storageBuilder) {
+                       StorageBuilder<Record> storageBuilder) {
         super(client);
         this.storageBuilder = storageBuilder;
     }
 
     @Override
     public InsertRequest prepareBatchInsert(Model model, Record record) throws IOException {
-        XContentBuilder builder = map2builder(
-            IndexController.INSTANCE.appendMetricTableColumn(model, storageBuilder.entity2Storage(record)));
-        String modelName = TimeSeriesUtils.writeIndexName(model, record.getTimeBucket());
-        String id = IndexController.INSTANCE.generateDocId(model, record.id());
-        return getClient().prepareInsert(modelName, id, builder);
+        final ElasticSearchConverter.ToStorage toStorage = new ElasticSearchConverter.ToStorage(model.getName());
+        storageBuilder.entity2Storage(record, toStorage);
+        Map<String, Object> builder = IndexController.INSTANCE.appendTableColumn(model, toStorage.obtain());
+        String modelName = IndexNames.writeIndex(model, record.getTimeBucket());
+        String id = IndexController.INSTANCE.generateDocId(model, record.id().build());
+        Optional<String> routingValue = RoutingUtils.getRoutingValue(model, toStorage);
+        return getClient().prepareInsert(modelName, id, routingValue, builder);
     }
 }

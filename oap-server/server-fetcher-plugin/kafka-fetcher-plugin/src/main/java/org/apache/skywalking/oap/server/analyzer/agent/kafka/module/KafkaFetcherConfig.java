@@ -43,21 +43,6 @@ public class KafkaFetcherConfig extends ModuleConfig {
     private String groupId = "skywalking-consumer";
 
     /**
-     * Which PartitionId(s) of the topics assign to the OAP server. If more than one, is separated by commas.
-     */
-    private String consumePartitions = "";
-
-    /**
-     * isSharding was true when OAP Server in cluster.
-     */
-    private boolean isSharding = false;
-
-    /**
-     * If true, create the Kafka topic when it does not exist.
-     */
-    private boolean createTopicIfNotExist = true;
-
-    /**
      * The number of partitions for the topic being created.
      */
     private int partitions = 3;
@@ -67,9 +52,9 @@ public class KafkaFetcherConfig extends ModuleConfig {
      */
     private int replicationFactor = 2;
 
-    private boolean enableMeterSystem = false;
+    private boolean enableNativeProtoLog = true;
 
-    private boolean enableLog = false;
+    private boolean enableNativeJsonLog = true;
 
     private String configPath = "meter-analyzer-config";
 
@@ -85,12 +70,18 @@ public class KafkaFetcherConfig extends ModuleConfig {
 
     private String topicNameOfLogs = "skywalking-logs";
 
+    private String topicNameOfJsonLogs = "skywalking-logs-json";
+
     private int kafkaHandlerThreadPoolSize;
 
     private int kafkaHandlerThreadPoolQueueSize;
-    
+
+    private String namespace = "";
+
     private String mm2SourceAlias = "";
 
     private String mm2SourceSeparator = "";
-    
+
+    private int consumers = 1;
+
 }

@@ -19,8 +19,9 @@
 package org.apache.skywalking.oap.server.core.analysis.manual.endpoint;
 
 import org.apache.skywalking.oap.server.core.source.DetectPoint;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.skywalking.oap.server.core.storage.type.HashMapConverter;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
 
 public class EndpointTrafficTest {
     @Test
@@ -37,7 +38,7 @@ public class EndpointTrafficTest {
         EndpointTraffic another = new EndpointTraffic();
         another.deserialize(endpointTraffic.serialize().build());
 
-        Assert.assertEquals(endpointTraffic, another);
+        Assertions.assertEquals(endpointTraffic, another);
     }
 
     @Test
@@ -52,8 +53,33 @@ public class EndpointTrafficTest {
         endpointTraffic.setName(endpointName);
 
         final EndpointTraffic.Builder builder = new EndpointTraffic.Builder();
-        final EndpointTraffic another = builder.storage2Entity(builder.entity2Storage(endpointTraffic));
+        final HashMapConverter.ToStorage toStorage = new HashMapConverter.ToStorage();
+        builder.entity2Storage(endpointTraffic, toStorage);
+        final EndpointTraffic another = builder.storage2Entity(new HashMapConverter.ToEntity(toStorage.obtain()));
 
-        Assert.assertEquals(endpointTraffic, another);
+        Assertions.assertEquals(endpointTraffic, another);
+    }
+
+    @Test
+    public void testCombineKeepsLatestLastPing() {
+        final EndpointTraffic stored = newTraffic(202003281425L);
+
+        stored.combine(newTraffic(0L));
+        Assertions.assertEquals(202003281425L, stored.getLastPingTimestamp());
+
+        stored.combine(newTraffic(202003281421L));
+        Assertions.assertEquals(202003281425L, stored.getLastPingTimestamp());
+
+        stored.combine(newTraffic(202003281430L));
+        Assertions.assertEquals(202003281430L, stored.getLastPingTimestamp());
+    }
+
+    private static EndpointTraffic newTraffic(final long lastPing) {
+        final EndpointTraffic traffic = new EndpointTraffic();
+        traffic.setTimeBucket(202003281420L);
+        traffic.setServiceId("mock_id");
+        traffic.setName("/endpoint-123");
+        traffic.setLastPingTimestamp(lastPing);
+        return traffic;
     }
 }

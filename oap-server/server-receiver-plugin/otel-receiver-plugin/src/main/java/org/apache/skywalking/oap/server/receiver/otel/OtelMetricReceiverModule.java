@@ -18,7 +18,9 @@
 
 package org.apache.skywalking.oap.server.receiver.otel;
 
+import org.apache.skywalking.oap.meter.analyzer.v2.MalConverterRegistry;
 import org.apache.skywalking.oap.server.library.module.ModuleDefine;
+import org.apache.skywalking.oap.server.receiver.otel.otlp.OpenTelemetryMetricRequestProcessor;
 
 public class OtelMetricReceiverModule extends ModuleDefine {
     public static final String NAME = "receiver-otel";
@@ -29,6 +31,6 @@ public class OtelMetricReceiverModule extends ModuleDefine {
 
     @Override
     public Class[] services() {
-        return new Class[0];
+        return new Class[] {OpenTelemetryMetricRequestProcessor.class, MalConverterRegistry.class};
     }
 }

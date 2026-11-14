@@ -18,61 +18,82 @@
 
 package org.apache.skywalking.oap.server.core.analysis.worker;
 
-import java.util.Collection;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.skywalking.apm.commons.datacarrier.DataCarrier;
-import org.apache.skywalking.apm.commons.datacarrier.consumer.IConsumer;
 import org.apache.skywalking.oap.server.core.analysis.data.LimitedSizeBufferedData;
 import org.apache.skywalking.oap.server.core.analysis.data.ReadWriteSafeCache;
 import org.apache.skywalking.oap.server.core.analysis.topn.TopN;
 import org.apache.skywalking.oap.server.core.storage.IRecordDAO;
 import org.apache.skywalking.oap.server.core.storage.model.Model;
+import org.apache.skywalking.oap.server.library.batchqueue.BatchQueue;
+import org.apache.skywalking.oap.server.library.batchqueue.BatchQueueConfig;
+import org.apache.skywalking.oap.server.library.batchqueue.BatchQueueManager;
+import org.apache.skywalking.oap.server.library.batchqueue.BufferStrategy;
+import org.apache.skywalking.oap.server.library.batchqueue.HandlerConsumer;
+import org.apache.skywalking.oap.server.library.batchqueue.PartitionPolicy;
+import org.apache.skywalking.oap.server.library.batchqueue.ThreadPolicy;
 import org.apache.skywalking.oap.server.library.client.request.PrepareRequest;
 import org.apache.skywalking.oap.server.library.module.ModuleDefineHolder;
 
 /**
  * Top N worker is a persistence worker. Cache and order the data, flush in longer period.
+ *
+ * <p>All TopN types share a single {@link BatchQueue} with fixed threads.
+ * The {@code typeHash()} partition selector ensures same TopN class lands on the same partition,
+ * so each worker's {@link LimitedSizeBufferedData} is only accessed by one drain thread.
  */
 @Slf4j
 public class TopNWorker extends PersistenceWorker<TopN> {
+    private static final String TOPN_QUEUE_NAME = "TOPN_PERSISTENCE";
+    private static final BatchQueueConfig<TopN> TOPN_QUEUE_CONFIG =
+        BatchQueueConfig.<TopN>builder()
+            .threads(ThreadPolicy.fixed(1))
+            .partitions(PartitionPolicy.adaptive())
+            .bufferSize(1_000)
+            .strategy(BufferStrategy.BLOCKING)
+            .minIdleMs(10)
+            .maxIdleMs(100)
+            .build();
+
     private final IRecordDAO recordDAO;
     private final Model model;
-    private final DataCarrier<TopN> dataCarrier;
+    private final BatchQueue<TopN> topNQueue;
     private long reportPeriod;
     private volatile long lastReportTimestamp;
 
     TopNWorker(ModuleDefineHolder moduleDefineHolder, Model model, int topNSize, long reportPeriod,
-               IRecordDAO recordDAO) {
+               IRecordDAO recordDAO, Class<? extends TopN> topNClass) {
         super(
             moduleDefineHolder,
             new ReadWriteSafeCache<>(new LimitedSizeBufferedData<>(topNSize), new LimitedSizeBufferedData<>(topNSize))
         );
         this.recordDAO = recordDAO;
         this.model = model;
-        this.dataCarrier = new DataCarrier<>("TopNWorker", 1, 1000);
-        this.dataCarrier.consume(new TopNWorker.TopNConsumer(), 1);
+        this.topNQueue = BatchQueueManager.getOrCreate(TOPN_QUEUE_NAME, TOPN_QUEUE_CONFIG);
         this.lastReportTimestamp = System.currentTimeMillis();
         // Top N persistent works per 10 minutes default.
         this.reportPeriod = reportPeriod;
+
+        topNQueue.addHandler(topNClass, new TopNHandler());
     }
 
     /**
      * Force overriding the parent buildBatchRequests. Use its own report period.
      */
     @Override
-    public void buildBatchRequests(final List<PrepareRequest> prepareRequests) {
+    public List<PrepareRequest> buildBatchRequests() {
         long now = System.currentTimeMillis();
         if (now - lastReportTimestamp <= reportPeriod) {
             // Only do report in its own report period.
-            return;
+            return Collections.emptyList();
         }
         lastReportTimestamp = now;
-        super.buildBatchRequests(prepareRequests);
-    }
 
-    @Override
-    public void prepareBatch(Collection<TopN> lastCollection, List<PrepareRequest> prepareRequests) {
+        final List<TopN> lastCollection = getCache().read();
+
+        List<PrepareRequest> prepareRequests = new ArrayList<>(lastCollection.size());
         lastCollection.forEach(record -> {
             try {
                 prepareRequests.add(recordDAO.prepareBatchInsert(model, record));
@@ -80,38 +101,25 @@ public class TopNWorker extends PersistenceWorker<TopN> {
                 log.error(t.getMessage(), t);
             }
         });
+        return prepareRequests;
     }
 
     /**
      * This method used to clear the expired cache, but TopN is not following it.
      */
     @Override
-    public void endOfRound(long tookTime) {
+    public void endOfRound() {
     }
 
     @Override
     public void in(TopN n) {
-        dataCarrier.produce(n);
+        topNQueue.produce(n);
     }
 
-    private class TopNConsumer implements IConsumer<TopN> {
-        @Override
-        public void init() {
-        }
-
+    private class TopNHandler implements HandlerConsumer<TopN> {
         @Override
         public void consume(List<TopN> data) {
-            TopNWorker.this.onWork(data);
-        }
-
-        @Override
-        public void onError(List<TopN> data, Throwable t) {
-            log.error(t.getMessage(), t);
-        }
-
-        @Override
-        public void onExit() {
-
+            onWork(data);
         }
     }
 }

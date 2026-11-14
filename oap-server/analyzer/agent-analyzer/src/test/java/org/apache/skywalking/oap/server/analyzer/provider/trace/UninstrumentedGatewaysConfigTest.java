@@ -18,14 +18,13 @@
 
 package org.apache.skywalking.oap.server.analyzer.provider.trace;
 
-import org.apache.skywalking.oap.server.library.module.ModuleConfig;
 import org.apache.skywalking.oap.server.library.module.ModuleDefine;
 import org.apache.skywalking.oap.server.library.module.ModuleProvider;
 import org.apache.skywalking.oap.server.library.module.ModuleStartException;
 import org.apache.skywalking.oap.server.library.module.ServiceNotProvidedException;
-import org.junit.Assert;
-import org.junit.Test;
-import org.powermock.reflect.Whitebox;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.apache.skywalking.oap.server.testing.util.ReflectUtil;
 
 public class UninstrumentedGatewaysConfigTest {
     @Test
@@ -33,8 +32,8 @@ public class UninstrumentedGatewaysConfigTest {
         final UninstrumentedGatewaysConfig uninstrumentedGatewaysConfig
             = new UninstrumentedGatewaysConfig(new MockProvider());
         UninstrumentedGatewaysConfig.GatewayInfos gatewayInfos
-            = Whitebox.invokeMethod(uninstrumentedGatewaysConfig, "parseGatewaysFromFile", "gateways.yml");
-        Assert.assertEquals(1, gatewayInfos.getGateways().size());
+            = ReflectUtil.invokeMethod(uninstrumentedGatewaysConfig, "parseGatewaysFromFile", "gateways.yml");
+        Assertions.assertEquals(1, gatewayInfos.getGateways().size());
     }
 
     private static class MockProvider extends ModuleProvider {
@@ -50,7 +49,7 @@ public class UninstrumentedGatewaysConfigTest {
         }
 
         @Override
-        public ModuleConfig createConfigBeanIfAbsent() {
+        public ConfigCreator newConfigCreator() {
             return null;
         }
 

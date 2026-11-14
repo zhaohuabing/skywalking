@@ -18,37 +18,41 @@
 
 package org.apache.skywalking.oap.server.core.analysis.meter.function.avg;
 
-import com.google.common.base.Strings;
-import io.vavr.Tuple;
-import io.vavr.Tuple2;
-import java.util.Comparator;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.stream.Collector;
-import java.util.stream.IntStream;
-import lombok.Getter;
-import lombok.Setter;
-import lombok.extern.slf4j.Slf4j;
-import org.apache.skywalking.oap.server.core.Const;
 import org.apache.skywalking.oap.server.core.UnexpectedException;
+import org.apache.skywalking.oap.server.core.analysis.meter.Meter;
 import org.apache.skywalking.oap.server.core.analysis.meter.MeterEntity;
 import org.apache.skywalking.oap.server.core.analysis.meter.function.AcceptableValue;
 import org.apache.skywalking.oap.server.core.analysis.meter.function.MeterFunction;
 import org.apache.skywalking.oap.server.core.analysis.meter.function.PercentileArgument;
+import org.apache.skywalking.oap.server.core.analysis.metrics.DataLabel;
 import org.apache.skywalking.oap.server.core.analysis.metrics.DataTable;
 import org.apache.skywalking.oap.server.core.analysis.metrics.IntList;
+import org.apache.skywalking.oap.server.core.analysis.metrics.LabeledValueHolder;
 import org.apache.skywalking.oap.server.core.analysis.metrics.Metrics;
-import org.apache.skywalking.oap.server.core.analysis.metrics.MultiIntValuesHolder;
 import org.apache.skywalking.oap.server.core.query.type.Bucket;
 import org.apache.skywalking.oap.server.core.remote.grpc.proto.RemoteData;
-import org.apache.skywalking.oap.server.core.storage.StorageHashMapBuilder;
+import org.apache.skywalking.oap.server.core.storage.StorageID;
+import org.apache.skywalking.oap.server.core.storage.annotation.BanyanDB;
 import org.apache.skywalking.oap.server.core.storage.annotation.Column;
-
+import org.apache.skywalking.oap.server.core.storage.annotation.ElasticSearch;
+import org.apache.skywalking.oap.server.core.storage.type.Convert2Entity;
+import org.apache.skywalking.oap.server.core.storage.type.Convert2Storage;
+import org.apache.skywalking.oap.server.core.storage.type.StorageBuilder;
+import io.vavr.Tuple;
+import io.vavr.Tuple2;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collector;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.mapping;
+import static org.apache.skywalking.oap.server.core.analysis.metrics.DataLabel.PERCENTILE_LABEL_NAME;
+
+import lombok.Getter;
+import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.skywalking.oap.server.library.util.CollectionUtils;
 
 /**
  * AvgPercentile intends to calculate percentile based on the average of raw values over the interval(minute, hour or day).
@@ -63,40 +67,49 @@ import static java.util.stream.Collectors.mapping;
  */
 @MeterFunction(functionName = "avgHistogramPercentile")
 @Slf4j
-public abstract class AvgHistogramPercentileFunction extends Metrics implements AcceptableValue<PercentileArgument>, MultiIntValuesHolder {
-    private static final String DEFAULT_GROUP = "pD";
+public abstract class AvgHistogramPercentileFunction extends Meter implements AcceptableValue<PercentileArgument>, LabeledValueHolder {
     public static final String DATASET = "dataset";
     public static final String RANKS = "ranks";
-    public static final String VALUE = "value";
-    protected static final String SUMMATION = "summation";
-    protected static final String COUNT = "count";
+    public static final String VALUE = "datatable_value";
+    protected static final String SUMMATION = "datatable_summation";
+    protected static final String COUNT = "datatable_count";
 
     @Setter
     @Getter
-    @Column(columnName = ENTITY_ID)
+    @ElasticSearch.EnableDocValues
+    @Column(name = ENTITY_ID)
+    @BanyanDB.SeriesID(index = 0)
     private String entityId;
     @Getter
     @Setter
-    @Column(columnName = VALUE, dataType = Column.ValueDataType.LABELED_VALUE, storageOnly = true)
+    @Column(name = VALUE, dataType = Column.ValueDataType.LABELED_VALUE, storageOnly = true)
+    @ElasticSearch.Column(legacyName = "value")
+    @BanyanDB.MeasureField
     private DataTable percentileValues = new DataTable(10);
     @Getter
     @Setter
-    @Column(columnName = SUMMATION, storageOnly = true)
+    @Column(name = SUMMATION, storageOnly = true)
+    @ElasticSearch.Column(legacyName = "summation")
+    @BanyanDB.MeasureField
     protected DataTable summation = new DataTable(30);
     @Getter
     @Setter
-    @Column(columnName = COUNT, storageOnly = true)
+    @Column(name = COUNT, storageOnly = true)
+    @ElasticSearch.Column(legacyName = "count")
+    @BanyanDB.MeasureField
     protected DataTable count = new DataTable(30);
     @Getter
     @Setter
-    @Column(columnName = DATASET, storageOnly = true)
+    @Column(name = DATASET, storageOnly = true)
+    @BanyanDB.MeasureField
     private DataTable dataset = new DataTable(30);
     /**
      * Rank
      */
     @Getter
     @Setter
-    @Column(columnName = RANKS, storageOnly = true)
+    @Column(name = RANKS, storageOnly = true)
+    @BanyanDB.MeasureField
     private IntList ranks = new IntList(10);
 
     private boolean isCalculated = false;
@@ -138,8 +151,8 @@ public abstract class AvgHistogramPercentileFunction extends Metrics implements 
         this.entityId = entity.id();
 
         String template = "%s";
-        if (!Strings.isNullOrEmpty(value.getBucketedValues().getGroup())) {
-            template  = value.getBucketedValues().getGroup() + ":%s";
+        if (CollectionUtils.isNotEmpty(value.getBucketedValues().getLabels())) {
+            template  = value.getBucketedValues().getLabels() + ":%s";
         }
         final long[] values = value.getBucketedValues().getValues();
         for (int i = 0; i < values.length; i++) {
@@ -157,15 +170,16 @@ public abstract class AvgHistogramPercentileFunction extends Metrics implements 
     public boolean combine(final Metrics metrics) {
         AvgHistogramPercentileFunction percentile = (AvgHistogramPercentileFunction) metrics;
 
-        if (ranks.size() > 0) {
-            if (this.ranks.size() != ranks.size()) {
+        if (this.ranks.size() > 0) {
+            IntList ranksOfThat = percentile.getRanks();
+            if (this.ranks.size() != ranksOfThat.size()) {
                 log.warn("Incompatible ranks size = [{}}] for current PercentileFunction[{}]",
-                         ranks.size(), this.ranks.size()
+                         ranksOfThat.size(), this.ranks.size()
                 );
                 return true;
             } else {
-                if (!this.ranks.equals(percentile.getRanks())) {
-                    log.warn("Rank {} doesn't exist in the previous ranks {}", percentile.getRanks(), ranks);
+                if (!this.ranks.equals(ranksOfThat)) {
+                    log.warn("Rank {} doesn't exist in the previous ranks {}", ranksOfThat, this.ranks);
                     return true;
                 }
             }
@@ -194,11 +208,13 @@ public abstract class AvgHistogramPercentileFunction extends Metrics implements 
             }
             dataset.keys().stream()
                    .map(key -> {
+                       DataLabel dataLabel = new DataLabel();
                        if (key.contains(":")) {
                            int index = key.lastIndexOf(":");
-                           return Tuple.of(key.substring(0, index), key);
+                           dataLabel.put(key.substring(0, index));
+                           return Tuple.of(dataLabel, key);
                        } else {
-                           return Tuple.of(DEFAULT_GROUP, key);
+                           return Tuple.of(dataLabel, key);
                        }
                    })
                    .collect(groupingBy(Tuple2::_1, mapping(Tuple2::_2, Collector.of(
@@ -215,16 +231,24 @@ public abstract class AvgHistogramPercentileFunction extends Metrics implements 
                        },
                        DataTable::append
                    ))))
-                   .forEach((group, subDataset) -> {
+                   .forEach((labels, subDataset) -> {
                        long total;
                        total = subDataset.sumOfValues();
+
+                    if (total <= 0) {
+                        for (int rankIdx = 0; rankIdx < ranks.size(); rankIdx++) {
+                            labels.put(PERCENTILE_LABEL_NAME, String.valueOf(ranks.get(rankIdx)));
+                            percentileValues.put(labels, 0L);
+                        }
+                        return;
+                    }
 
                     int[] roofs = new int[ranks.size()];
                     for (int i = 0; i < ranks.size(); i++) {
                         roofs[i] = Math.round(total * ranks.get(i) * 1.0f / 100);
                     }
 
-                    int count = 0;
+                    long count = 0;
                     final List<String> sortedKeys = subDataset.sortedKeys(Comparator.comparingLong(Long::parseLong));
 
                     int loopIndex = 0;
@@ -237,11 +261,8 @@ public abstract class AvgHistogramPercentileFunction extends Metrics implements 
                             int roof = roofs[rankIdx];
 
                             if (count >= roof) {
-                                if (group.equals(DEFAULT_GROUP)) {
-                                    percentileValues.put(String.valueOf(ranks.get(rankIdx)), Long.parseLong(key));
-                                } else {
-                                    percentileValues.put(String.format("%s:%s", group, ranks.get(rankIdx)), Long.parseLong(key));
-                                }
+                                labels.put(PERCENTILE_LABEL_NAME, String.valueOf(ranks.get(rankIdx)));
+                                percentileValues.put(labels, Long.parseLong(key));
                                 loopIndex++;
                             } else {
                                 break;
@@ -257,10 +278,10 @@ public abstract class AvgHistogramPercentileFunction extends Metrics implements 
         AvgHistogramPercentileFunction metrics = (AvgHistogramPercentileFunction) createNew();
         metrics.setEntityId(getEntityId());
         metrics.setTimeBucket(toTimeBucketInHour());
-        metrics.setSummation(getSummation());
-        metrics.setCount(getCount());
-        metrics.setRanks(getRanks());
-        metrics.setPercentileValues(getPercentileValues());
+        metrics.getSummation().copyFrom(getSummation());
+        metrics.getCount().copyFrom(getCount());
+        metrics.getRanks().copyFrom(getRanks());
+        metrics.getPercentileValues().copyFrom(getPercentileValues());
         return metrics;
     }
 
@@ -269,19 +290,16 @@ public abstract class AvgHistogramPercentileFunction extends Metrics implements 
         AvgHistogramPercentileFunction metrics = (AvgHistogramPercentileFunction) createNew();
         metrics.setEntityId(getEntityId());
         metrics.setTimeBucket(toTimeBucketInDay());
-        metrics.setSummation(getSummation());
-        metrics.setCount(getCount());
-        metrics.setRanks(getRanks());
-        metrics.setPercentileValues(getPercentileValues());
+        metrics.getSummation().copyFrom(getSummation());
+        metrics.getCount().copyFrom(getCount());
+        metrics.getRanks().copyFrom(getRanks());
+        metrics.getPercentileValues().copyFrom(getPercentileValues());
         return metrics;
     }
 
     @Override
-    public int[] getValues() {
-        return percentileValues.sortedValues(Comparator.comparingInt(Integer::parseInt))
-                               .stream()
-                               .flatMapToInt(l -> IntStream.of(l.intValue()))
-                               .toArray();
+    public DataTable getValue() {
+        return percentileValues;
     }
 
     @Override
@@ -317,8 +335,10 @@ public abstract class AvgHistogramPercentileFunction extends Metrics implements 
     }
 
     @Override
-    public String id() {
-        return getTimeBucket() + Const.ID_CONNECTOR + entityId;
+    protected StorageID id0() {
+        return new StorageID()
+            .append(TIME_BUCKET, getTimeBucket())
+            .append(ENTITY_ID, getEntityId());
     }
 
     @Override
@@ -326,37 +346,34 @@ public abstract class AvgHistogramPercentileFunction extends Metrics implements 
         return AvgPercentileFunctionBuilder.class;
     }
 
-    public static class AvgPercentileFunctionBuilder implements StorageHashMapBuilder<AvgHistogramPercentileFunction> {
-
+    public static class AvgPercentileFunctionBuilder implements StorageBuilder<AvgHistogramPercentileFunction> {
         @Override
-        public AvgHistogramPercentileFunction storage2Entity(final Map<String, Object> dbMap) {
+        public AvgHistogramPercentileFunction storage2Entity(final Convert2Entity converter) {
             AvgHistogramPercentileFunction metrics = new AvgHistogramPercentileFunction() {
                 @Override
                 public AcceptableValue<PercentileArgument> createNew() {
                     throw new UnexpectedException("createNew should not be called");
                 }
             };
-            metrics.setDataset(new DataTable((String) dbMap.get(DATASET)));
-            metrics.setSummation(new DataTable((String) dbMap.get(SUMMATION)));
-            metrics.setCount(new DataTable((String) dbMap.get(COUNT)));
-            metrics.setRanks(new IntList((String) dbMap.get(RANKS)));
-            metrics.setPercentileValues(new DataTable((String) dbMap.get(VALUE)));
-            metrics.setTimeBucket(((Number) dbMap.get(TIME_BUCKET)).longValue());
-            metrics.setEntityId((String) dbMap.get(ENTITY_ID));
+            metrics.setDataset(new DataTable((String) converter.get(DATASET)));
+            metrics.setSummation(new DataTable((String) converter.get(SUMMATION)));
+            metrics.setCount(new DataTable((String) converter.get(COUNT)));
+            metrics.setRanks(new IntList((String) converter.get(RANKS)));
+            metrics.setPercentileValues(new DataTable((String) converter.get(VALUE)));
+            metrics.setTimeBucket(((Number) converter.get(TIME_BUCKET)).longValue());
+            metrics.setEntityId((String) converter.get(ENTITY_ID));
             return metrics;
         }
 
         @Override
-        public Map<String, Object> entity2Storage(final AvgHistogramPercentileFunction storageData) {
-            Map<String, Object> map = new HashMap<>();
-            map.put(SUMMATION, storageData.getSummation());
-            map.put(COUNT, storageData.getCount());
-            map.put(DATASET, storageData.getDataset());
-            map.put(RANKS, storageData.getRanks());
-            map.put(VALUE, storageData.getPercentileValues());
-            map.put(TIME_BUCKET, storageData.getTimeBucket());
-            map.put(ENTITY_ID, storageData.getEntityId());
-            return map;
+        public void entity2Storage(final AvgHistogramPercentileFunction storageData, final Convert2Storage converter) {
+            converter.accept(SUMMATION, storageData.getSummation());
+            converter.accept(COUNT, storageData.getCount());
+            converter.accept(DATASET, storageData.getDataset());
+            converter.accept(RANKS, storageData.getRanks());
+            converter.accept(VALUE, storageData.getPercentileValues());
+            converter.accept(TIME_BUCKET, storageData.getTimeBucket());
+            converter.accept(ENTITY_ID, storageData.getEntityId());
         }
     }
 

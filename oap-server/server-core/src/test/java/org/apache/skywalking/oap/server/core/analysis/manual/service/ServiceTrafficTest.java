@@ -18,27 +18,33 @@
 
 package org.apache.skywalking.oap.server.core.analysis.manual.service;
 
+import org.apache.skywalking.oap.server.core.analysis.Layer;
+import org.apache.skywalking.oap.server.core.storage.type.HashMapConverter;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+
 import java.util.Map;
-import org.apache.skywalking.oap.server.core.analysis.NodeType;
-import org.junit.Assert;
-import org.junit.Test;
 
 public class ServiceTrafficTest {
     @Test
     public void testGrouping() {
         ServiceTraffic traffic = new ServiceTraffic();
         traffic.setName("group-name::service-name");
-        traffic.setNodeType(NodeType.Normal);
-        final Map<String, Object> stringObjectMap = new ServiceTraffic.Builder().entity2Storage(traffic);
-        Assert.assertEquals("group-name", stringObjectMap.get(ServiceTraffic.GROUP));
+        traffic.setLayer(Layer.UNDEFINED);
+        final HashMapConverter.ToStorage toStorage = new HashMapConverter.ToStorage();
+        new ServiceTraffic.Builder().entity2Storage(traffic, toStorage);
+        final Map<String, Object> stringObjectMap = toStorage.obtain();
+        Assertions.assertEquals("group-name", stringObjectMap.get(ServiceTraffic.GROUP));
     }
 
     @Test
     public void testNoGrouping() {
         ServiceTraffic traffic = new ServiceTraffic();
         traffic.setName("group-name:service-name:no");
-        traffic.setNodeType(NodeType.Normal);
-        final Map<String, Object> stringObjectMap = new ServiceTraffic.Builder().entity2Storage(traffic);
-        Assert.assertNull(stringObjectMap.get(ServiceTraffic.GROUP));
+        traffic.setLayer(Layer.UNDEFINED);
+        final HashMapConverter.ToStorage toStorage = new HashMapConverter.ToStorage();
+        new ServiceTraffic.Builder().entity2Storage(traffic, toStorage);
+        final Map<String, Object> stringObjectMap = toStorage.obtain();
+        Assertions.assertNull(stringObjectMap.get(ServiceTraffic.GROUP));
     }
 }

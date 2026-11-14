@@ -21,6 +21,7 @@ package org.apache.skywalking.oap.server.analyzer.provider.jvm;
 import java.util.List;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.skywalking.apm.network.common.v3.CPU;
+import org.apache.skywalking.apm.network.language.agent.v3.Class;
 import org.apache.skywalking.apm.network.language.agent.v3.GC;
 import org.apache.skywalking.apm.network.language.agent.v3.JVMMetric;
 import org.apache.skywalking.apm.network.language.agent.v3.Memory;
@@ -28,11 +29,11 @@ import org.apache.skywalking.apm.network.language.agent.v3.MemoryPool;
 import org.apache.skywalking.apm.network.language.agent.v3.Thread;
 import org.apache.skywalking.oap.server.core.CoreModule;
 import org.apache.skywalking.oap.server.core.analysis.IDManager;
-import org.apache.skywalking.oap.server.core.analysis.NodeType;
 import org.apache.skywalking.oap.server.core.analysis.TimeBucket;
-import org.apache.skywalking.oap.server.core.source.GCPhrase;
+import org.apache.skywalking.oap.server.core.source.GCPhase;
 import org.apache.skywalking.oap.server.core.source.MemoryPoolType;
 import org.apache.skywalking.oap.server.core.source.ServiceInstanceJVMCPU;
+import org.apache.skywalking.oap.server.core.source.ServiceInstanceJVMClass;
 import org.apache.skywalking.oap.server.core.source.ServiceInstanceJVMGC;
 import org.apache.skywalking.oap.server.core.source.ServiceInstanceJVMMemory;
 import org.apache.skywalking.oap.server.core.source.ServiceInstanceJVMMemoryPool;
@@ -51,7 +52,7 @@ public class JVMSourceDispatcher {
     public void sendMetric(String service, String serviceInstance, JVMMetric metrics) {
         long minuteTimeBucket = TimeBucket.getMinuteTimeBucket(metrics.getTime());
 
-        final String serviceId = IDManager.ServiceID.buildId(service, NodeType.Normal);
+        final String serviceId = IDManager.ServiceID.buildId(service, true);
         final String serviceInstanceId = IDManager.ServiceInstanceID.buildId(serviceId, serviceInstance);
 
         this.sendToCpuMetricProcess(
@@ -63,7 +64,9 @@ public class JVMSourceDispatcher {
         this.sendToGCMetricProcess(
             service, serviceId, serviceInstance, serviceInstanceId, minuteTimeBucket, metrics.getGcList());
         this.sendToThreadMetricProcess(
-                service, serviceId, serviceInstance, serviceInstanceId, minuteTimeBucket, metrics.getThread());
+            service, serviceId, serviceInstance, serviceInstanceId, minuteTimeBucket, metrics.getThread());
+        this.sendToClassMetricProcess(
+                service, serviceId, serviceInstance, serviceInstanceId, minuteTimeBucket, metrics.getClazz());
     }
 
     private void sendToCpuMetricProcess(String service,
@@ -97,12 +100,15 @@ public class JVMSourceDispatcher {
             serviceInstanceJVMGC.setServiceId(serviceId);
             serviceInstanceJVMGC.setServiceName(service);
 
-            switch (gc.getPhrase()) {
+            switch (gc.getPhase()) {
                 case NEW:
-                    serviceInstanceJVMGC.setPhrase(GCPhrase.NEW);
+                    serviceInstanceJVMGC.setPhase(GCPhase.NEW);
                     break;
                 case OLD:
-                    serviceInstanceJVMGC.setPhrase(GCPhrase.OLD);
+                    serviceInstanceJVMGC.setPhase(GCPhase.OLD);
+                    break;
+                case NORMAL:
+                    serviceInstanceJVMGC.setPhase(GCPhase.NORMAL);
                     break;
             }
 
@@ -168,6 +174,21 @@ public class JVMSourceDispatcher {
                 case CODE_CACHE_USAGE:
                     serviceInstanceJVMMemoryPool.setPoolType(MemoryPoolType.CODE_CACHE_USAGE);
                     break;
+                case ZHEAP_USAGE:
+                    serviceInstanceJVMMemoryPool.setPoolType(MemoryPoolType.ZHEAP_USAGE);
+                    break;
+                case COMPRESSED_CLASS_SPACE_USAGE:
+                    serviceInstanceJVMMemoryPool.setPoolType(MemoryPoolType.COMPRESSED_CLASS_SPACE_USAGE);
+                    break;
+                case CODEHEAP_NON_NMETHODS_USAGE:
+                    serviceInstanceJVMMemoryPool.setPoolType(MemoryPoolType.CODEHEAP_NON_NMETHODS_USAGE);
+                    break;
+                case CODEHEAP_PROFILED_NMETHODS_USAGE:
+                    serviceInstanceJVMMemoryPool.setPoolType(MemoryPoolType.CODEHEAP_PROFILED_NMETHODS_USAGE);
+                    break;
+                case CODEHEAP_NON_PROFILED_NMETHODS_USAGE:
+                    serviceInstanceJVMMemoryPool.setPoolType(MemoryPoolType.CODEHEAP_NON_PROFILED_NMETHODS_USAGE);
+                    break;
             }
 
             serviceInstanceJVMMemoryPool.setInit(memoryPool.getInit());
@@ -180,11 +201,11 @@ public class JVMSourceDispatcher {
     }
 
     private void sendToThreadMetricProcess(String service,
-            String serviceId,
-            String serviceInstance,
-            String serviceInstanceId,
-            long timeBucket,
-            Thread thread) {
+                                           String serviceId,
+                                           String serviceInstance,
+                                           String serviceInstanceId,
+                                           long timeBucket,
+                                           Thread thread) {
         ServiceInstanceJVMThread serviceInstanceJVMThread = new ServiceInstanceJVMThread();
         serviceInstanceJVMThread.setId(serviceInstanceId);
         serviceInstanceJVMThread.setName(serviceInstance);
@@ -193,7 +214,29 @@ public class JVMSourceDispatcher {
         serviceInstanceJVMThread.setLiveCount(thread.getLiveCount());
         serviceInstanceJVMThread.setDaemonCount(thread.getDaemonCount());
         serviceInstanceJVMThread.setPeakCount(thread.getPeakCount());
+        serviceInstanceJVMThread.setRunnableStateThreadCount(thread.getRunnableStateThreadCount());
+        serviceInstanceJVMThread.setBlockedStateThreadCount(thread.getBlockedStateThreadCount());
+        serviceInstanceJVMThread.setWaitingStateThreadCount(thread.getWaitingStateThreadCount());
+        serviceInstanceJVMThread.setTimedWaitingStateThreadCount(thread.getTimedWaitingStateThreadCount());
         serviceInstanceJVMThread.setTimeBucket(timeBucket);
         sourceReceiver.receive(serviceInstanceJVMThread);
+    }
+
+    private void sendToClassMetricProcess(String service,
+                                          String serviceId,
+                                          String serviceInstance,
+                                          String serviceInstanceId,
+                                          long timeBucket,
+                                          Class clazz) {
+        ServiceInstanceJVMClass serviceInstanceJVMClass = new ServiceInstanceJVMClass();
+        serviceInstanceJVMClass.setId(serviceInstanceId);
+        serviceInstanceJVMClass.setName(serviceInstance);
+        serviceInstanceJVMClass.setServiceId(serviceId);
+        serviceInstanceJVMClass.setServiceName(service);
+        serviceInstanceJVMClass.setLoadedClassCount(clazz.getLoadedClassCount());
+        serviceInstanceJVMClass.setTotalUnloadedClassCount(clazz.getTotalUnloadedClassCount());
+        serviceInstanceJVMClass.setTotalLoadedClassCount(clazz.getTotalLoadedClassCount());
+        serviceInstanceJVMClass.setTimeBucket(timeBucket);
+        sourceReceiver.receive(serviceInstanceJVMClass);
     }
 }

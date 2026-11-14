@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.apache.skywalking.oap.server.core.browser.source.BrowserErrorCategory;
+import org.apache.skywalking.oap.server.core.query.input.Duration;
 import org.apache.skywalking.oap.server.core.query.type.BrowserErrorLogs;
 import org.apache.skywalking.oap.server.core.query.type.ErrorCategory;
 import org.apache.skywalking.oap.server.core.query.type.Pagination;
@@ -46,10 +47,8 @@ public class BrowserLogQueryService implements Service {
     public BrowserErrorLogs queryBrowserErrorLogs(final String serviceId,
                                                   final String serviceVersionId,
                                                   final String pagePathId,
-                                                  final String pagePath,
                                                   final ErrorCategory category,
-                                                  final long startSecondTB,
-                                                  final long endSecondTB,
+                                                  final Duration duration,
                                                   final Pagination paging) throws IOException {
         PaginationUtils.Page page = PaginationUtils.INSTANCE.exchange(paging);
         BrowserErrorCategory errorCategory = Optional.ofNullable(category)
@@ -58,7 +57,7 @@ public class BrowserLogQueryService implements Service {
                                                      .orElse(null);
 
         return getBrowserLogQueryDAO().queryBrowserErrorLogs(
-            serviceId, serviceVersionId, pagePathId, pagePath, errorCategory, startSecondTB, endSecondTB,
+            serviceId, serviceVersionId, pagePathId, errorCategory, duration,
             page.getLimit(),
             page.getFrom()
         );

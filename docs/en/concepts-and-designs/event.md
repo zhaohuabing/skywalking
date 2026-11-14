@@ -20,7 +20,7 @@ An event contains the following fields. The definitions of event can be found at
 
 ### UUID
 
-Unique ID of the event. Since an event may span a long period of time, the UUID is necessary to associate the start time with the end time of the same event. 
+Unique ID of the event. Since an event may span a long period of time, the UUID is necessary to associate the start time with the end time of the same event.
 
 ### Source
 
@@ -42,7 +42,7 @@ It's NOT recommended to include the detailed logs of this event, such as the exc
 
 ### Parameters
 
-The parameters in the `message` field. This is a simple `<string,string>` map. 
+The parameters in the `message` field. This is a simple `<string,string>` map.
 
 ### Start Time
 
@@ -54,3 +54,32 @@ The end time of the event. This field may be empty if the event has not ended ye
 
 **NOTE:** When reporting an event, you typically call the report function twice, the first time for starting of the event and the second time for ending of the event, both with the same UUID.
 There are also cases where you would already have both the start time and end time. For example, when exporting events from a third-party system, the start time and end time are already known so you may simply call the report function once.
+
+## Correlation between events and metrics
+
+SkyWalking UI visualizes the events in the dashboard when the event service / instance / endpoint matches the displayed
+service / instance / endpoint.
+
+## Known Events
+
+| Name | Type | When | Where |
+| :----: | :----: | :-----| :---- |
+| Start | Normal | When your Java Application starts with SkyWalking Agent installed, the `Start` Event will be created. | Reported from SkyWalking agent. |
+| Shutdown | Normal | When your Java Application stops with SkyWalking Agent installed, the `Shutdown` Event will be created. | Reported from SkyWalking agent. |
+
+The following events are all reported
+by [Kubernetes Event Exporter](http://github.com/apache/skywalking-kubernetes-event-exporter), in order to see these
+events, please make sure you have deployed the exporter.
+
+| Name | Type | When | Where |
+| :----: | :----: | :-----| :---- |
+| Killing | Normal | When the Kubernetes Pod is being killing. | Reporter by Kubernetes Event Exporter. |
+| Pulling | Normal | When a docker image is being pulled for deployment. | Reporter by Kubernetes Event Exporter. |
+| Pulled | Normal | When a docker image is pulled for deployment. | Reporter by Kubernetes Event Exporter. |
+| Created | Normal | When a container inside a Pod is created. | Reporter by Kubernetes Event Exporter. |
+| Started | Normal | When a container inside a Pod is started. | Reporter by Kubernetes Event Exporter. |
+| Unhealthy | Error | When the readiness probe failed. | Reporter by Kubernetes Event Exporter. |
+
+The complete event lists can be found
+in [the Kubernetes codebase](https://github.com/kubernetes/kubernetes/blob/v1.21.1/pkg/kubelet/events/event.go), please
+note that not all the events are supported by the exporter for now.

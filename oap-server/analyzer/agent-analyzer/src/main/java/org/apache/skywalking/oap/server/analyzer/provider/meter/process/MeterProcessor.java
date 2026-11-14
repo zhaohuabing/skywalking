@@ -22,17 +22,17 @@ import com.google.common.collect.ImmutableMap;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.skywalking.apm.network.language.agent.v3.Label;
+import org.apache.skywalking.apm.network.language.agent.v3.MeterBucketValue;
 import org.apache.skywalking.apm.network.language.agent.v3.MeterData;
 import org.apache.skywalking.apm.network.language.agent.v3.MeterHistogram;
 import org.apache.skywalking.apm.network.language.agent.v3.MeterSingleValue;
-import org.apache.skywalking.apm.util.StringUtil;
-import org.apache.skywalking.oap.meter.analyzer.MetricConvert;
-import org.apache.skywalking.oap.meter.analyzer.dsl.HistogramType;
-import org.apache.skywalking.oap.meter.analyzer.dsl.Sample;
-import org.apache.skywalking.oap.meter.analyzer.dsl.SampleFamilyBuilder;
-import org.apache.skywalking.oap.server.library.util.CollectionUtils;
+import org.apache.skywalking.oap.server.library.util.StringUtil;
+import org.apache.skywalking.oap.meter.analyzer.v2.MetricConvert;
+import org.apache.skywalking.oap.meter.analyzer.v2.dsl.Sample;
+import org.apache.skywalking.oap.meter.analyzer.v2.dsl.SampleFamilyBuilder;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,7 +53,7 @@ public class MeterProcessor {
     private final MeterProcessService processService;
 
     /**
-     * All of meters has been read. Using it to process groovy script.
+     * All of meters has been read. Using it to process MAL expressions.
      */
     private final Map<String, List<SampleBuilder>> meters = new HashMap<>();
 
@@ -96,7 +96,7 @@ public class MeterProcessor {
                             .name(histogram.getName())
                             .labels(ImmutableMap.<String, String>builder()
                                 .putAll(baseLabel)
-                                .put("le", String.valueOf(v.getBucket())).build())
+                                .put("le", parseHistogramBucket(v)).build())
                             .value(v.getCount()).build()
                 ).collect(Collectors.toList()));
                 break;
@@ -125,21 +125,30 @@ public class MeterProcessor {
             return;
         }
 
-        // Get all meter builders.
-        final List<MetricConvert> converts = processService.converts();
-        if (CollectionUtils.isEmpty(converts)) {
+        // Get all meter builders. Re-read per batch so a runtime-rule hot-update lands on the
+        // next batch without an OAP restart.
+        final Collection<MetricConvert> converts = processService.converts();
+        if (converts.isEmpty()) {
             return;
         }
 
         try {
-            converts.stream().forEach(convert -> convert.toMeter(meters.entrySet().stream().collect(toImmutableMap(
+            converts.forEach(convert -> convert.toMeter(meters.entrySet().stream().collect(toImmutableMap(
                 Map.Entry::getKey,
                 v -> SampleFamilyBuilder.newBuilder(
                     v.getValue().stream().map(s -> s.build(service, serviceInstance, timestamp)).toArray(Sample[]::new)
-                ).histogramType(HistogramType.ORDINARY).defaultHistogramBucketUnit(TimeUnit.MILLISECONDS).build()
+                ).defaultHistogramBucketUnit(TimeUnit.MILLISECONDS).build()
             ))));
         } catch (Exception e) {
             log.warn("Process meters failure.", e);
+        }
+    }
+
+    private String parseHistogramBucket(MeterBucketValue bucketValue) {
+        if (bucketValue.getIsNegativeInfinity()) {
+            return String.valueOf(Long.MIN_VALUE);
+        } else {
+            return String.valueOf(bucketValue.getBucket());
         }
     }
 

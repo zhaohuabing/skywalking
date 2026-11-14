@@ -21,6 +21,7 @@ import com.google.protobuf.InvalidProtocolBufferException;
 import java.io.IOException;
 import java.util.Base64;
 import org.apache.skywalking.oap.server.core.browser.source.BrowserErrorCategory;
+import org.apache.skywalking.oap.server.core.query.input.Duration;
 import org.apache.skywalking.oap.server.core.query.type.BrowserErrorLog;
 import org.apache.skywalking.oap.server.core.query.type.BrowserErrorLogs;
 import org.apache.skywalking.oap.server.core.query.type.ErrorCategory;
@@ -30,22 +31,23 @@ public interface IBrowserLogQueryDAO extends Service {
     BrowserErrorLogs queryBrowserErrorLogs(String serviceId,
                                            String serviceVersionId,
                                            String pagePathId,
-                                           String pagePath,
                                            BrowserErrorCategory category,
-                                           long startSecondTB,
-                                           long endSecondTB,
+                                           Duration duration,
                                            int limit,
                                            int from) throws IOException;
+
+    default BrowserErrorLog parserDataBinary(String dataBinaryBase64) {
+        return parserDataBinary(Base64.getDecoder().decode(dataBinaryBase64));
+    }
 
     /**
      * Parser the raw error log.
      */
-    default BrowserErrorLog parserDataBinary(
-        String dataBinaryBase64) {
+    default BrowserErrorLog parserDataBinary(byte[] dataBinary) {
         try {
             BrowserErrorLog log = new BrowserErrorLog();
             org.apache.skywalking.apm.network.language.agent.v3.BrowserErrorLog browserErrorLog = org.apache.skywalking.apm.network.language.agent.v3.BrowserErrorLog
-                .parseFrom(Base64.getDecoder().decode(dataBinaryBase64));
+                .parseFrom(dataBinary);
 
             log.setService(browserErrorLog.getService());
             log.setServiceVersion(browserErrorLog.getServiceVersion());

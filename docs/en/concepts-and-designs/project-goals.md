@@ -27,11 +27,10 @@ and also don't fit every scenario. So, we provide a lot of features for being pl
 SkyWalking should run well in all of these cases.
 
 - **Interoperability**. The observability landscape is so vast that it is virtually impossible for SkyWalking to support all systems, even with the support of its community.
-Currently, it supports interoperability with other OSS systems, especially probes, such as Zipkin, Jaeger, OpenTracing, and OpenCensus.
+Currently, it supports interoperability with other OSS systems, especially probes, such as Zipkin, Jaeger, and OpenTelemetry.
 It is very important to end users that SkyWalking has the ability to accept and read these data formats, since the users are not required to switch their libraries.
 
 
 ## What is next?
 - See [probe Introduction](probe-introduction.md) to learn about SkyWalking's probe groups.
 - From [backend overview](backend-overview.md), you can understand what the backend does after it receives probe data.
-- If you want to customize the UI, start with the [UI overview](ui-overview.md) document. 

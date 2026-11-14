@@ -24,7 +24,6 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
-import java.security.GeneralSecurityException;
 import java.util.Base64;
 
 /**
@@ -39,7 +38,7 @@ public class PrivateKeyUtil {
     /**
      * Load a RSA decryption key from a file (PEM or DER).
      */
-    public static InputStream loadDecryptionKey(String keyFilePath) throws GeneralSecurityException, IOException {
+    public static InputStream loadDecryptionKey(String keyFilePath) throws IOException {
         byte[] keyDataBytes = Files.readAllBytes(Paths.get(keyFilePath));
         String keyDataString = new String(keyDataBytes, StandardCharsets.UTF_8);
 
@@ -58,7 +57,7 @@ public class PrivateKeyUtil {
      * Create a InputStream instance from raw PKCS#1 bytes. Raw Java API can't recognize ASN.1 format, so we should
      * convert it into a pkcs#8 format Java can understand.
      */
-    private static InputStream readPkcs1PrivateKey(byte[] pkcs1Bytes) throws GeneralSecurityException {
+    private static InputStream readPkcs1PrivateKey(byte[] pkcs1Bytes) {
         int pkcs1Length = pkcs1Bytes.length;
         int totalLength = pkcs1Length + 22;
         byte[] pkcs8Header = new byte[] {
@@ -68,7 +67,7 @@ public class PrivateKeyUtil {
             0x4, (byte) 0x82, (byte) ((pkcs1Length >> 8) & 0xff), (byte) (pkcs1Length & 0xff) // Octet string + length
         };
         StringBuilder pkcs8 = new StringBuilder(PKCS_8_PEM_HEADER);
-        pkcs8.append("\n").append(new String(Base64.getEncoder().encode(join(pkcs8Header, pkcs1Bytes))));
+        pkcs8.append("\n").append(new String(Base64.getEncoder().encode(join(pkcs8Header, pkcs1Bytes)), StandardCharsets.UTF_8));
         pkcs8.append("\n").append(PKCS_8_PEM_FOOTER);
         return new ByteArrayInputStream(pkcs8.toString().getBytes());
     }
